@@ -4,8 +4,9 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
+import { getCurrentUser, getLead, getWorkspace } from "@/lib/data";
 import { parseLeadForm, type LeadFormField } from "@/lib/lead-form";
-import type { LeadStatus } from "@/lib/types";
+import { LEAD_STATUSES, type LeadStatus } from "@/lib/types";
 
 const PUBLIC_FORM_WORKSPACE_ID = "ws_studio_nova";
 
@@ -65,13 +66,28 @@ export async function submitLead(
   return { status: "ok" };
 }
 
+// Server Actions are public POST endpoints, not just buttons in our UI: every
+// action checks the session and that the lead belongs to the caller's workspace.
+async function requireOwnLead(id: string) {
+  const user = await getCurrentUser();
+  const [workspace, lead] = await Promise.all([getWorkspace(user.workspaceSlug), getLead(id)]);
+  if (!lead || lead.workspaceId !== workspace.id) {
+    throw new Error("Lead not found");
+  }
+}
+
 export async function updateLeadStatus(id: string, status: LeadStatus) {
+  if (!(LEAD_STATUSES as readonly string[]).includes(status)) {
+    throw new Error("Unknown lead status");
+  }
+  await requireOwnLead(id);
   await db.updateLeadStatus(id, status);
   revalidatePath("/dashboard");
   revalidatePath(`/dashboard/leads/${id}`);
 }
 
 export async function deleteLead(id: string) {
+  await requireOwnLead(id);
   await db.deleteLead(id);
   revalidatePath("/dashboard");
 }
