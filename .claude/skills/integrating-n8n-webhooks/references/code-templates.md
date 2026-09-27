@@ -102,9 +102,10 @@ export function isFreshTimestamp(timestamp: string | null, now = Date.now()): ti
 }
 
 // HMAC-SHA256(N8N_CALLBACK_SECRET, "<timestamp>.<сире тіло>"), заголовок — "sha256=<hex>".
+// Заглушка з .env.example чи короткий секрет — завжди false: такий колбек міг би підписати будь-хто.
 export function isValidSignature(rawBody: string, timestamp: string, header: string | null): boolean {
   const secret = process.env.N8N_CALLBACK_SECRET;
-  if (!secret || !header) return false;
+  if (!secret || secret.startsWith("change-me") || secret.length < 32 || !header) return false;
   const expected = `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
   const given = Buffer.from(header);
   const wanted = Buffer.from(expected);
@@ -188,8 +189,13 @@ export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]
     return Response.json({ error: "unsupported_media_type" }, { status: 415 });
   }
 
+  // Розмір — за заявленим content-length, ще до читання: Route Handler розмір тіла не обмежує
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  }
   const raw = await request.text(); // сирий текст: підпис рахується від цих байтів
   if (Buffer.byteLength(raw) > MAX_BODY_BYTES) {
+    // запит без content-length (chunked) — за фактичним розміром
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
 
@@ -236,14 +242,18 @@ import "server-only";
 import type { N8nCallback } from "@/lib/n8n/types";
 
 // createQuote({ …, status: "queued", requestKey: randomUUID() }) — ключ створюється один раз і живе в записі.
+// updateQuote(id, patch, onlyIf) змінює запис, лише якщо його поточний статус в onlyIf (compare-and-set).
 export async function applyQuoteResult(callback: N8nCallback): Promise<boolean> {
   const quote = await findQuoteByRequestKey(callback.data.requestIdempotencyKey);
   if (!quote) return false;
-  await updateQuote(quote.id, {
-    status: callback.data.status === "completed" ? "ready" : "failed",
-    documentUrl: callback.data.result?.documentUrl ?? null,
-  });
-  return true;
+  if (callback.data.status === "failed") {
+    // пізній "failed" не стирає вже готовий результат
+    await updateQuote(quote.id, { status: "failed", documentUrl: null }, ["queued"]);
+  } else {
+    // "completed" — із queued або failed (n8n таки отримав запит), але не поверх готового
+    await updateQuote(quote.id, { status: "ready", documentUrl: callback.data.result?.documentUrl ?? null }, ["queued", "failed"]);
+  }
+  return true; // запис є — колбек оброблено (202), навіть якщо стан не змінився
 }
 ```
 

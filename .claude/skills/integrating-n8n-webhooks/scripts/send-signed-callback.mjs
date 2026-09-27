@@ -5,6 +5,8 @@
 // signatures, the bodies or the idempotency keys.
 
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
+import http from "node:http";
+import https from "node:https";
 import { parseArgs } from "node:util";
 
 const USAGE = `send-signed-callback - callback matrix against POST /api/n8n/<event>
@@ -28,6 +30,7 @@ Cases (expected code):
   inherited property as the event (/constructor)   404  (handler lookup must use own keys only)
   content-type text/plain                          415
   body larger than 64 KB                           413
+  declares 1 MB (content-length), sends 1 KB       413 within 2 s  (size is checked before the body is read)
   timestamp 10 min in the past / in the future     401
   no x-n8n-timestamp / no x-n8n-signature          401
   signature made with another secret               401
@@ -135,6 +138,7 @@ const cases = [
     callback({ url: urlFor("constructor"), body: callbackBody({ bodyEvent: "constructor.completed" }) })],
   ["content-type text/plain", [415], () => callback({ contentType: "text/plain" })],
   ["body larger than 64 KB", [413], () => callback({ body: callbackBody({ extra: { padding: "x".repeat(65 * 1024) } }) })],
+  ["declares 1 MB (content-length), sends 1 KB", [413], () => null, sendDeclaredTooLarge],
   ["timestamp 10 min in the past", [401], () => callback({ timestamp: String(now() - 600) })],
   ["timestamp 10 min in the future", [401], () => callback({ timestamp: String(now() + 600) })],
   ["no x-n8n-timestamp", [401], () => callback({ omit: ["x-n8n-timestamp"] })],
@@ -172,17 +176,50 @@ async function send({ url, headers, text }) {
   return { status: response.status, duplicate };
 }
 
+// Declares a 1 MB body and sends only 1 KB of it. A route that checks content-length answers 413
+// at once; a route that reads the whole body first keeps waiting for the rest.
+function sendDeclaredTooLarge() {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const client = target.protocol === "https:" ? https : http;
+    const req = client.request(target, {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(1024 * 1024) },
+    });
+    const timer = setTimeout(() => {
+      settle(resolve, { status: "no answer in 2 s", duplicate: false });
+      req.destroy();
+    }, 2000);
+    req.on("response", (res) => {
+      res.resume();
+      settle(resolve, { status: res.statusCode, duplicate: false });
+      req.destroy();
+    });
+    req.on("error", (error) => {
+      if (error.code === "ECONNREFUSED") settle(reject, error);
+      else settle(resolve, { status: `connection closed (${error.code})`, duplicate: false });
+    });
+    req.write(`{"padding":"${"x".repeat(1000)}`);
+  });
+}
+
 console.log(`send-signed-callback - POST ${target.origin}${target.pathname} (event ${event})`);
 let passed = 0;
 let failed = 0;
-for (const [name, expected, build] of cases) {
+for (const [name, expected, build, sender = send] of cases) {
   const request = build();
   const got = [];
   let ok = true;
   for (let step = 0; step < expected.length; step++) {
     let result;
     try {
-      result = await send(request); // a repeat sends the very same bytes, like n8n's Retry On Fail
+      result = await sender(request); // a repeat sends the very same bytes, like n8n's Retry On Fail
     } catch (error) {
       process.stderr.write(`send-signed-callback: cannot reach ${target.origin}: ${error.cause?.code ?? error.name}\n`);
       process.exit(2);
