@@ -181,7 +181,8 @@ function parseCallback(raw: string): N8nCallback | null {
 
 export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]">) {
   const { event } = await ctx.params;
-  const handler = HANDLERS[event];
+  // Object.hasOwn: інакше /api/n8n/constructor знайшов би Object.prototype.constructor і минув би 404
+  const handler = Object.hasOwn(HANDLERS, event) ? HANDLERS[event] : undefined;
   if (!handler) return Response.json({ error: "not_found" }, { status: 404 });
   if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return Response.json({ error: "unsupported_media_type" }, { status: 415 });

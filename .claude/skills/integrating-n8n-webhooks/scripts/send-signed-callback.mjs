@@ -25,6 +25,7 @@ Environment (never pass secrets as flags):
 
 Cases (expected code):
   unknown event in the path                        404
+  inherited property as the event (/constructor)   404  (handler lookup must use own keys only)
   content-type text/plain                          415
   body larger than 64 KB                           413
   timestamp 10 min in the past / in the future     401
@@ -81,8 +82,11 @@ if (target.protocol !== "http:" && target.protocol !== "https:") usageError("--u
 const segments = target.pathname.split("/").filter(Boolean);
 const event = segments.at(-1);
 if (!event) usageError("--url must end with the event, e.g. /api/n8n/quote-request");
-const unknownUrl = new URL(target);
-unknownUrl.pathname = `/${[...segments.slice(0, -1), "no-such-event"].join("/")}`;
+const urlFor = (name) => {
+  const url = new URL(target);
+  url.pathname = `/${[...segments.slice(0, -1), name].join("/")}`;
+  return url;
+};
 
 const secret = process.env.N8N_CALLBACK_SECRET;
 if (!secret) usageError("N8N_CALLBACK_SECRET is not set: run with node --env-file=.env.local ...");
@@ -126,7 +130,9 @@ function callback({ url = target, body = callbackBody(), raw, signedRaw, timesta
 
 const cases = [
   ["unknown event in the path", [404], () =>
-    callback({ url: unknownUrl, body: callbackBody({ bodyEvent: "no-such-event.completed" }) })],
+    callback({ url: urlFor("no-such-event"), body: callbackBody({ bodyEvent: "no-such-event.completed" }) })],
+  ["inherited property as the event (/constructor)", [404], () =>
+    callback({ url: urlFor("constructor"), body: callbackBody({ bodyEvent: "constructor.completed" }) })],
   ["content-type text/plain", [415], () => callback({ contentType: "text/plain" })],
   ["body larger than 64 KB", [413], () => callback({ body: callbackBody({ extra: { padding: "x".repeat(65 * 1024) } }) })],
   ["timestamp 10 min in the past", [401], () => callback({ timestamp: String(now() - 600) })],
