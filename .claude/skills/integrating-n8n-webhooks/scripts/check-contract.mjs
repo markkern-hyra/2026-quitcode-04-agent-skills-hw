@@ -509,26 +509,28 @@ for (const route of callbackRoutes) {
   } else if (!hasTimingSafe) {
     const f = set.find((x) => /createHmac\s*\(/.test(x.noComments));
     fail("C9", f.rel, lineOf(f, f.noComments.search(/createHmac\s*\(/)), "the signature is compared without timingSafeEqual");
+  } else if (!hasHmac) {
+    const f = set.find((x) => /timingSafeEqual\s*\(/.test(x.noComments));
+    fail("C9", f.rel, lineOf(f, f.noComments.search(/timingSafeEqual\s*\(/)), "no HMAC of the body: verify sha256=HMAC(N8N_CALLBACK_SECRET, \"<timestamp>.<raw body>\")");
   }
+  // A line compares a signature with ===/!== (whole identifier parts only: "assignedTo" is not "sig").
+  const comparesSignature = (line, words) => {
+    if (!/[!=]==?/.test(line) || /\.length|byteLength|typeof/.test(line)) return false;
+    if (/[!=]==?\s*(?:null|undefined|""|''|0|false|true)\b|\b(?:null|undefined)\s*[!=]==?/.test(line)) return false;
+    return (line.match(/[A-Za-z_$][\w$]*/g) ?? []).some((id) =>
+      id.split(/_|(?<=[a-z0-9])(?=[A-Z])/).some((part) => words.has(part.toLowerCase())),
+    );
+  };
+  const SIGNATURE_WORDS = new Set(["sig", "signature", "hmac", "digest"]);
+  const SIGNATURE_OR_EXPECTED = new Set([...SIGNATURE_WORDS, "expected"]);
   for (const f of set) {
     const at = f.noComments.search(/timingSafeEqual\s*\(/);
-    if (at < 0) continue;
-    if (!/\.length\s*[!=]==?|[!=]==?\s*[\w$.]+\.length\b|byteLength/.test(f.code)) {
+    const words = at < 0 ? SIGNATURE_WORDS : SIGNATURE_OR_EXPECTED;
+    if (at >= 0 && !/\.length\s*[!=]==?|[!=]==?\s*[\w$.]+\.length\b|byteLength/.test(f.code)) {
       fail("C9", f.rel, lineOf(f, at), "timingSafeEqual without a length check (it throws on different lengths)");
     }
     f.code.split("\n").forEach((line, i) => {
-      if (!/[!=]==?/.test(line) || !/sig|signature|hmac|digest|expected/i.test(line)) return;
-      if (/\.length|byteLength|typeof/.test(line)) return;
-      if (/[!=]==?\s*(?:null|undefined|""|''|0|false|true)\b|\b(?:null|undefined)\s*[!=]==?/.test(line)) return;
-      fail("C9", f.rel, i + 1, "the signature is compared with ===/!==: use timingSafeEqual");
-    });
-  }
-  for (const f of set.filter((x) => !/timingSafeEqual\s*\(/.test(x.noComments))) {
-    f.code.split("\n").forEach((line, i) => {
-      if (!/[!=]==?/.test(line) || !/sig|signature|hmac|digest/i.test(line)) return;
-      if (/\.length|byteLength|typeof/.test(line)) return;
-      if (/[!=]==?\s*(?:null|undefined|""|''|0|false|true)\b|\b(?:null|undefined)\s*[!=]==?/.test(line)) return;
-      fail("C9", f.rel, i + 1, "the signature is compared with ===/!==: use timingSafeEqual");
+      if (comparesSignature(line, words)) fail("C9", f.rel, i + 1, "the signature is compared with ===/!==: use timingSafeEqual");
     });
   }
 
