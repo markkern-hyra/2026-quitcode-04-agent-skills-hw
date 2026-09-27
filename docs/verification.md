@@ -20,7 +20,12 @@
 |---|---|---|
 | `vercel-react-best-practices` | Project | видно одразу після коміту `b8f6866` (27.09.2026) |
 | `building-client-form` | Project | у записі `init` обох сесій перевірки спрацювання (Task B), після коміту `f0d8c3b` |
-| `integrating-n8n-webhooks` | | |
+| `integrating-n8n-webhooks` | Project | після коміту `ffbb903`; у `/context` копії B (Task D) — єдиний проєктний скіл, у копії A його немає |
+
+- Фінальний `/context` на гілці перед здачею (CLI 2.1.283, Opus 5.5, `mcp_servers: []`, 0 MCP-інструментів):
+  Project — `building-client-form` (~290 токенів), `integrating-n8n-webhooks` (~300),
+  `vercel-react-best-practices` (~120); User — `no-mistakes` (~120); далі — ті самі плагінні, вбудовані й
+  синхронізовані скіли, що й у всіх перевірках.
 
 - Особисті скіли, які теж видно, і чи можуть вони вплинути на перевірки:
   - `no-mistakes` (User, `~/.claude/skills`) — конвеєр перевірки змін (рев'ю, тести, push, PR), не про
