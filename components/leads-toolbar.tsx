@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import ExcelJS from "exceljs";
 import type { SourceCount } from "@/lib/types";
 import { SourcesChart } from "./sources-chart";
 
@@ -26,7 +25,9 @@ export function LeadsToolbar({ sources }: { sources: SourceCount[] }) {
       const response = await fetch("/api/leads");
       const { leads } = (await response.json()) as { leads: ExportRow[] };
 
-      const workbook = new ExcelJS.Workbook();
+      // exceljs is ~1 MB: load it only when someone actually exports.
+      const { Workbook } = await import("exceljs");
+      const workbook = new Workbook();
       const sheet = workbook.addWorksheet("Leads");
       sheet.columns = [
         { header: "ID", key: "id", width: 12 },
