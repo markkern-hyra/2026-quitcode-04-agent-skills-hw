@@ -2,28 +2,49 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { deleteLead, updateLeadStatus } from "@/app/actions";
+import { deleteLead, updateLeadStatus, type LeadMutationResult } from "@/app/actions";
 import { LEAD_STATUSES, type LeadStatus } from "@/lib/types";
 import { STATUS_LABELS } from "./status-badge";
+
+const FAILURE_TEXT = {
+  invalid: "Невідомий статус.",
+  not_found: "Лід не знайдено: можливо, його вже видалили. Оновіть сторінку.",
+  error: "Не вдалося зберегти зміни. Спробуйте ще раз.",
+} as const;
 
 export function LeadActions({ leadId, status }: { leadId: string; status: LeadStatus }) {
   const router = useRouter();
   const [current, setCurrent] = useState<LeadStatus>(status);
+  const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
+  // The action says whether it worked; a rejected call (network, server error) is a failure too.
+  async function run(action: () => Promise<LeadMutationResult>): Promise<boolean> {
+    try {
+      const result = await action();
+      if (result.status === "ok") return true;
+      setError(FAILURE_TEXT[result.status]);
+    } catch {
+      setError(FAILURE_TEXT.error);
+    }
+    return false;
+  }
+
   function changeStatus(next: LeadStatus) {
+    const previous = current;
     setCurrent(next);
+    setError(null);
     startTransition(async () => {
-      await updateLeadStatus(leadId, next);
-      router.refresh();
+      if (await run(() => updateLeadStatus(leadId, next))) router.refresh();
+      else setCurrent(previous);
     });
   }
 
   function remove() {
     if (!window.confirm("Видалити лід назавжди?")) return;
+    setError(null);
     startTransition(async () => {
-      await deleteLead(leadId);
-      router.push("/dashboard");
+      if (await run(() => deleteLead(leadId))) router.push("/dashboard");
     });
   }
 
@@ -52,6 +73,11 @@ export function LeadActions({ leadId, status }: { leadId: string; status: LeadSt
       >
         Видалити лід
       </button>
+      {error && (
+        <p role="alert" className="w-full text-sm text-red-700">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

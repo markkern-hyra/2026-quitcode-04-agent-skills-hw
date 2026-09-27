@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { addLeadNote, type AddLeadNoteState } from "@/app/actions";
 import { LEAD_NOTE_MAX_LENGTH } from "@/lib/lead-note-form";
 
@@ -8,11 +8,20 @@ const initialState: AddLeadNoteState = { status: "idle" };
 
 export function LeadNoteForm({ leadId }: { leadId: string }) {
   const [state, formAction, pending] = useActionState(addLeadNote, initialState);
-  const errors = state.status === "invalid" ? state.errors : {};
-  const values = state.status === "invalid" ? state.values : {};
+  // Editing the field hides its old error until the next submission.
+  const [editedAfter, setEditedAfter] = useState<AddLeadNoteState | null>(null);
+  const errors = state.status === "invalid" && editedAfter !== state ? state.errors : {};
+  const values = state.status === "invalid" || state.status === "error" ? state.values : {};
 
   return (
-    <form action={formAction} className="space-y-2" noValidate>
+    // key: React 19 resets the form after the action; remounting with the returned values keeps the note
+    <form
+      key={`${state.status}:${values.text ?? ""}`}
+      action={formAction}
+      onChange={() => setEditedAfter(state)}
+      className="space-y-2"
+      noValidate
+    >
       <input type="hidden" name="leadId" value={leadId} />
 
       {state.status === "invalid" && (
@@ -22,7 +31,7 @@ export function LeadNoteForm({ leadId }: { leadId: string }) {
       )}
       {state.status === "error" && (
         <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-800">
-          Не вдалося зберегти нотатку. Оновіть сторінку й спробуйте ще раз.
+          Не вдалося зберегти нотатку. Оновіть сторінку й спробуйте ще раз — текст нижче збережено.
         </div>
       )}
 
@@ -38,7 +47,7 @@ export function LeadNoteForm({ leadId }: { leadId: string }) {
         defaultValue={values.text ?? ""}
         aria-invalid={errors.text ? true : undefined}
         aria-describedby={errors.text ? "note-text-hint note-text-error" : "note-text-hint"}
-        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 aria-invalid:border-red-500"
+        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-base shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 aria-invalid:border-red-500 sm:text-sm"
       />
       <p id="note-text-hint" className="text-xs text-slate-500">
         До {LEAD_NOTE_MAX_LENGTH} символів. Нотатку бачить лише команда.
