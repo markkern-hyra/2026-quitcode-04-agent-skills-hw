@@ -208,7 +208,15 @@
   8. немає події чи шляху вебхука — не вигадувати назву воркфлоу.
 - SHA коміту зі скілом (BASE для Task D): `ffbb903` (`ffbb903bd64fbd2b3dbd75b55e32293b46abb67c`) —
   `skills: add integrating-n8n-webhooks (contract, references, scripts)`
-- Що скіл змінив у собі після прогонів (коміти й чому): <…>
+- Що скіл змінив у собі після прогонів (коміти й чому; деталі — `docs/ab-validation.md`):
+  - `33c2abd` — `check-contract.mjs`, C9. Хибний FAIL: `assignedTo: status === "new"` у `lib/db.ts` вважався
+    порівнянням підпису (`sig` усередині `assignedTo`); тепер ідентифікатори порівнюються цілими частинами.
+    Хибний PASS: колбек прогону A (Bearer-токен через `timingSafeEqual`, без HMAC тіла) проходив C9; тепер —
+    FAIL «no HMAC of the body».
+  - `558a282` — шаблон колбека в `code-templates.md`: `Object.hasOwn(HANDLERS, event)`; у
+    `send-signed-callback.mjs` — випадок `/constructor` → 404 (тепер 15 випадків + 1 з `--request-key`).
+    Знайшов агент прогону B: на шаблоні з BASE підписаний колбек на `/api/n8n/constructor` отримував 202 і
+    нічого не зберігав.
 
 **Як перевірили, що скрипти ловлять порушення, а шаблони — робочі** (фікстури — копії застосунку в
 тимчасовій теці, після перевірок видалені):
@@ -297,8 +305,25 @@ Result: 8 PASS, 6 FAIL, 0 N/A
 exit=1
 ```
 
-**`check-contract.mjs` на фінальному коді** (після перенесення прогону B — 0 FAIL):
+**`check-contract.mjs` на фінальному коді** (після перенесення прогону B — `4d551b7`; скрипт після `33c2abd`):
 
 ```
-<вивід>
+$ node .claude/skills/integrating-n8n-webhooks/scripts/check-contract.mjs; echo "exit=$?"
+check-contract (n8n) - root: …/2026-quitcode-04-agent-skills-hw - whole project
+C1   PASS  No test webhook URLs (/webhook-test/) in code or .env.example
+C2   PASS  n8n variables stay server-only (no NEXT_PUBLIC_N8N_*)
+C3   PASS  n8n is called only from lib/n8n/client.ts, which starts with import "server-only"
+C4   PASS  Every request to n8n has a timeout (signal: AbortSignal.timeout(...))
+C5   PASS  Requests to n8n send x-n8n-token, idempotency-key and x-correlation-id
+C6   PASS  The request body is an envelope {version, event, data}, not a raw record
+C7   PASS  Server Actions do not wait for n8n (the call runs inside after())
+C8   PASS  Callback reads the raw body (request.text()) and parses JSON only after the signature check
+C9   PASS  Callback signature: HMAC with a length check + timingSafeEqual, never ===
+C10  PASS  Callback rejects a stale x-n8n-timestamp (300 s window)
+C11  PASS  Callback claims idempotency-key and ties it to data.jobId and the event
+C12  PASS  No edge runtime (export const runtime = "edge")
+C13  PASS  .env.example has N8N_WEBHOOK_BASE_URL (.../webhook), N8N_WEBHOOK_TOKEN, N8N_CALLBACK_SECRET, APP_BASE_URL; secrets are change-me-...
+C14  PASS  No request bodies, personal data or secrets in console.* logs
+Result: 14 PASS, 0 FAIL, 0 N/A
+exit=0
 ```
