@@ -16,10 +16,12 @@
    і Value = значення `N8N_WEBHOOK_TOKEN` (передаємо окремо, не в чаті й не в тікеті). Respond — «Using
    'Respond to Webhook' Node». Тіло запиту — `$json.body` (конверт `{version, event, data, callbackUrl}`),
    заголовки — `$json.headers`.
-2. **Remove Duplicates** одразу за Webhook: «Remove Items Processed in Previous Executions», значення —
-   заголовок `idempotency-key`. LeadDesk повторює запит (до 3 спроб) з тим самим ключем.
-3. **Respond to Webhook** одразу після цього: JSON, код **202**, тіло `{"job_id": "<id виконання>"}`.
-   Чекати на PDF до відповіді не можна: на n8n Cloud через 100 с запит обривається з 524.
+2. **Respond to Webhook** одразу за Webhook, **до** Remove Duplicates: JSON, код **202**, тіло
+   `{"job_id": "<id виконання>"}`. Чекати на PDF до відповіді не можна: на n8n Cloud через 100 с запит
+   обривається з 524. Порядок важливий: відкинутий дублікат, що не дійшов до цього вузла, отримав би
+   стандартний 200, а LeadDesk для воркфлоу з колбеком вважає успіхом лише 202.
+3. **Remove Duplicates** після нього: «Remove Items Processed in Previous Executions», значення — заголовок
+   `idempotency-key`. LeadDesk повторює запит (до 3 спроб) з тим самим ключем; повтор отримує 202 і далі не йде.
 4. Генерація PDF. Сам файл у колбек не кладемо — лише посилання (`http`/`https`), доступне клієнту.
 5. **Колбек:** тіло — рядок JSON `{"version":1,"event":"quote-request.completed","data":{"jobId":<id виконання>,
    "status":"completed","correlationId":<заголовок x-correlation-id запиту>,"requestIdempotencyKey":<заголовок
