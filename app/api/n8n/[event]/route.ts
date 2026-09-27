@@ -1,5 +1,6 @@
 import { after } from "next/server";
-import { claimIdempotencyKey, releaseIdempotencyKey } from "@/lib/n8n/idempotency";
+import { readBodyLimited } from "@/lib/n8n/body";
+import { claimIdempotencyKey, completeIdempotencyKey, releaseIdempotencyKey } from "@/lib/n8n/idempotency";
 import { isFreshTimestamp, isValidSignature } from "@/lib/n8n/signature";
 import type { N8nCallback } from "@/lib/n8n/types";
 import { applyQuoteResult } from "@/lib/quotes";
@@ -14,13 +15,29 @@ const HANDLERS: Record<string, (callback: N8nCallback) => Promise<boolean>> = {
   "quote-request": applyQuoteResult,
 };
 
-function parseCallback(raw: string): N8nCallback | null {
+// The link is rendered as <a href>: http(s) only, never javascript: and the like.
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "https:" || protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function parseCallback(raw: string, event: string): N8nCallback | null {
   try {
     const value = JSON.parse(raw) as Partial<N8nCallback> | null;
     const data = value?.data;
-    if (value?.version !== 1 || typeof value.event !== "string" || !data) return null;
+    if (value?.version !== 1 || !data) return null;
     if (typeof data.jobId !== "string" || typeof data.requestIdempotencyKey !== "string") return null;
     if (data.status !== "completed" && data.status !== "failed") return null;
+    // The body's event is this path's event, and its suffix is the status: no ".completed" that says "failed".
+    if (value.event !== `${event}.${data.status}`) return null;
+    // Each status carries its result: a document link, or an error code.
+    if (data.status === "completed" && !isHttpUrl(data.result?.documentUrl)) return null;
+    if (data.status === "failed" && typeof data.error?.code !== "string") return null;
     return value as N8nCallback;
   } catch {
     return null;
@@ -31,20 +48,18 @@ export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]
   const { event } = await ctx.params;
   const handler = Object.hasOwn(HANDLERS, event) ? HANDLERS[event] : undefined;
   if (!handler) return Response.json({ error: "not_found" }, { status: 404 });
-  if (!request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+  const mediaType = request.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+  if (mediaType !== "application/json") {
     return Response.json({ error: "unsupported_media_type" }, { status: 415 });
   }
 
-  // The declared size first, before reading: a Route Handler does not limit the body itself, so without
-  // this anyone (no secret needed) could make the server hold megabytes in memory.
+  // Size before reading: content-length for a quick refusal, then a bounded read (a chunked body has
+  // no content-length). A Route Handler does not limit the body itself; no secret is needed to send one.
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
-  const raw = await request.text(); // raw text: the signature covers exactly these bytes
-  if (Buffer.byteLength(raw) > MAX_BODY_BYTES) {
-    // a body without content-length (chunked): by its actual size
-    return Response.json({ error: "payload_too_large" }, { status: 413 });
-  }
+  const raw = await readBodyLimited(request, MAX_BODY_BYTES); // raw text: the signature covers exactly these bytes
+  if (raw === null) return Response.json({ error: "payload_too_large" }, { status: 413 });
 
   const timestamp = request.headers.get("x-n8n-timestamp");
   if (!isFreshTimestamp(timestamp) || !isValidSignature(raw, timestamp, request.headers.get("x-n8n-signature"))) {
@@ -53,12 +68,14 @@ export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]
 
   const key = request.headers.get("idempotency-key");
   if (!key) return Response.json({ error: "bad_request" }, { status: 400 });
-  if (!(await claimIdempotencyKey(key))) return Response.json({ duplicate: true }, { status: 200 });
+  const claim = await claimIdempotencyKey(key);
+  if (claim === "done") return Response.json({ duplicate: true }, { status: 200 });
+  // Another delivery of this callback is being saved right now: not done yet, so n8n should retry.
+  if (claim === "processing") return Response.json({ error: "in_progress" }, { status: 409 });
 
-  const callback = parseCallback(raw); // JSON.parse only after the signature check
-  const eventMatches = callback?.event === `${event}.completed` || callback?.event === `${event}.failed`;
+  const callback = parseCallback(raw, event); // JSON.parse only after the signature check
   // The header is not signed: it must equal the signed body's jobId and event.
-  if (!callback || !eventMatches || key !== `${callback.data.jobId}:${callback.event}`) {
+  if (!callback || key !== `${callback.data.jobId}:${callback.event}`) {
     await releaseIdempotencyKey(key);
     return Response.json({ error: "bad_request" }, { status: 400 });
   }
@@ -73,6 +90,7 @@ export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]
     console.error("n8n.callback_failed", { event, error: (error as Error).name });
     return Response.json({ error: "internal" }, { status: 500 });
   }
+  await completeIdempotencyKey(key);
 
   const correlationId = request.headers.get("x-correlation-id");
   after(() => {

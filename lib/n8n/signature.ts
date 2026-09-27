@@ -8,11 +8,17 @@ export function isFreshTimestamp(timestamp: string | null, now = Date.now()): ti
   return Math.abs(Math.floor(now / 1000) - Number(timestamp)) <= SIGNATURE_WINDOW_SECONDS;
 }
 
-// HMAC-SHA256(N8N_CALLBACK_SECRET, "<timestamp>.<raw body>"), header value "sha256=<hex>".
-// The .env.example placeholder or a short secret is always rejected: anyone could sign with it.
-export function isValidSignature(rawBody: string, timestamp: string, header: string | null): boolean {
+// The callback secret, unless it is missing, the .env.example placeholder or too short:
+// anyone could sign a callback with those.
+export function usableCallbackSecret(): string | null {
   const secret = process.env.N8N_CALLBACK_SECRET;
-  if (!secret || secret.startsWith("change-me") || secret.length < 32 || !header) return false;
+  return secret && !secret.startsWith("change-me") && secret.length >= 32 ? secret : null;
+}
+
+// HMAC-SHA256(N8N_CALLBACK_SECRET, "<timestamp>.<raw body>"), header value "sha256=<hex>".
+export function isValidSignature(rawBody: string, timestamp: string, header: string | null): boolean {
+  const secret = usableCallbackSecret();
+  if (!secret || !header) return false;
   const expected = `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
   const given = Buffer.from(header);
   const wanted = Buffer.from(expected);
