@@ -1,8 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import type { SourceCount } from "@/lib/types";
-import { SourcesChart } from "./sources-chart";
+
+// recharts loads only when the chart is first shown. `ssr: false` is allowed
+// here because this is a Client Component (not in Server Components).
+const SourcesChart = dynamic(() => import("./sources-chart").then((m) => m.SourcesChart), {
+  ssr: false,
+  loading: () => <div className="h-64 w-full" />,
+});
 
 type ExportRow = {
   id: string;
