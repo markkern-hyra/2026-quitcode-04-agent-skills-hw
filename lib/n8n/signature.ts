@@ -9,9 +9,10 @@ export function isFreshTimestamp(timestamp: string | null, now = Date.now()): ti
 }
 
 // HMAC-SHA256(N8N_CALLBACK_SECRET, "<timestamp>.<raw body>"), header value "sha256=<hex>".
+// The .env.example placeholder or a short secret is always rejected: anyone could sign with it.
 export function isValidSignature(rawBody: string, timestamp: string, header: string | null): boolean {
   const secret = process.env.N8N_CALLBACK_SECRET;
-  if (!secret || !header) return false;
+  if (!secret || secret.startsWith("change-me") || secret.length < 32 || !header) return false;
   const expected = `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
   const given = Buffer.from(header);
   const wanted = Buffer.from(expected);

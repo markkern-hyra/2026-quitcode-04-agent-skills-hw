@@ -441,11 +441,12 @@ export const db = {
   updateQuote(
     id: string,
     patch: { status: QuoteStatus; documentUrl?: string | null },
-    onlyIf?: QuoteStatus,
+    onlyIf?: QuoteStatus | readonly QuoteStatus[],
   ) {
     return query("updateQuote", () => {
       const quote = store.quotes.find((q) => q.id === id);
-      if (!quote || (onlyIf && quote.status !== onlyIf)) return false;
+      const allowed = onlyIf === undefined ? null : ([] as readonly QuoteStatus[]).concat(onlyIf);
+      if (!quote || (allowed && !allowed.includes(quote.status))) return false;
       Object.assign(quote, patch, { updatedAt: new Date().toISOString() });
       return true;
     });

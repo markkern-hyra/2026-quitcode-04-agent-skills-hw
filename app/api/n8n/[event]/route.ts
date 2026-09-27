@@ -35,8 +35,14 @@ export async function POST(request: Request, ctx: RouteContext<"/api/n8n/[event]
     return Response.json({ error: "unsupported_media_type" }, { status: 415 });
   }
 
+  // The declared size first, before reading: a Route Handler does not limit the body itself, so without
+  // this anyone (no secret needed) could make the server hold megabytes in memory.
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) {
+    return Response.json({ error: "payload_too_large" }, { status: 413 });
+  }
   const raw = await request.text(); // raw text: the signature covers exactly these bytes
   if (Buffer.byteLength(raw) > MAX_BODY_BYTES) {
+    // a body without content-length (chunked): by its actual size
     return Response.json({ error: "payload_too_large" }, { status: 413 });
   }
 
