@@ -1,11 +1,14 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { db } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { getCurrentUser, getLead, getWorkspace } from "@/lib/data";
 import { parseLeadForm, type LeadFormField } from "@/lib/lead-form";
+import { triggerWorkflow } from "@/lib/n8n/client";
 import { LEAD_STATUSES, type LeadStatus } from "@/lib/types";
 
 const PUBLIC_FORM_WORKSPACE_ID = "ws_studio_nova";
@@ -51,15 +54,18 @@ export async function submitLead(
     },
   });
 
-  try {
-    await fetch(process.env.N8N_WEBHOOK_URL!, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(lead),
-    });
-  } catch (error) {
-    console.error(`Failed to send lead ${lead.id} to n8n`, error);
-  }
+  // An "FYI" event: n8n answers at once and nothing comes back. Still not awaited,
+  // so the visitor never waits for n8n (or its retries).
+  const idempotencyKey = randomUUID();
+  after(async () => {
+    try {
+      // The minimum: contact details, IP and the raw form stay in LeadDesk.
+      await triggerWorkflow("lead-created", { leadId: lead.id, source: lead.source }, { idempotencyKey });
+    } catch (error) {
+      // configuration error, e.g. a missing N8N_* variable
+      console.error("n8n.request_failed", { event: "lead-created", error: (error as Error).name });
+    }
+  });
 
   await logAudit("lead.created", lead.id);
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AuditEntry,
   Lead,
@@ -5,6 +6,9 @@ import type {
   LeadStats,
   LeadStatus,
   NewLead,
+  NewQuote,
+  Quote,
+  QuoteStatus,
   SourceCount,
   User,
   Workspace,
@@ -19,6 +23,7 @@ type Store = {
   users: User[];
   leads: Lead[];
   audit: AuditEntry[];
+  quotes: Quote[];
   nextLeadNumber: number;
 };
 
@@ -35,6 +40,10 @@ const LATENCY_MS = {
   insertAuditEntry: 250,
   listUsers: 50,
   createSession: 50,
+  insertQuote: 120,
+  getQuote: 80,
+  getQuoteByRequestKey: 80,
+  updateQuote: 80,
 } as const;
 
 type QueryName = keyof typeof LATENCY_MS;
@@ -261,7 +270,7 @@ function createStore(): Store {
     { id: "u_marta", name: "Marta Novak", email: "marta@brightline.example.test", role: "manager", workspaceSlug: "brightline" },
   ];
   const leads = seedLeads(200, workspaces, users);
-  return { workspaces, users, leads, audit: [], nextLeadNumber: leads.length + 1 };
+  return { workspaces, users, leads, audit: [], quotes: [], nextLeadNumber: leads.length + 1 };
 }
 
 // One store per server process (also survives module reloads in `next dev`).
@@ -381,6 +390,53 @@ export const db = {
   insertAuditEntry(entry: AuditEntry) {
     return query("insertAuditEntry", () => {
       store.audit.push(entry);
+    });
+  },
+
+  insertQuote(input: NewQuote) {
+    return query("insertQuote", (): Quote => {
+      const now = new Date().toISOString();
+      const quote: Quote = {
+        ...input,
+        id: `q_${randomUUID()}`,
+        status: "queued",
+        requestKey: randomUUID(),
+        correlationId: randomUUID(),
+        documentUrl: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      store.quotes.push(quote);
+      return structuredClone(quote);
+    });
+  },
+
+  getQuote(id: string) {
+    return query("getQuote", () => {
+      const quote = store.quotes.find((q) => q.id === id);
+      return quote ? structuredClone(quote) : null;
+    });
+  },
+
+  getQuoteByRequestKey(requestKey: string) {
+    return query("getQuoteByRequestKey", () => {
+      const quote = store.quotes.find((q) => q.requestKey === requestKey);
+      return quote ? structuredClone(quote) : null;
+    });
+  },
+
+  // `onlyIf` makes the update conditional on the current status (compare-and-set),
+  // so a late "trigger failed" cannot overwrite a result that already arrived.
+  updateQuote(
+    id: string,
+    patch: { status: QuoteStatus; documentUrl?: string | null },
+    onlyIf?: QuoteStatus,
+  ) {
+    return query("updateQuote", () => {
+      const quote = store.quotes.find((q) => q.id === id);
+      if (!quote || (onlyIf && quote.status !== onlyIf)) return false;
+      Object.assign(quote, patch, { updatedAt: new Date().toISOString() });
+      return true;
     });
   },
 };

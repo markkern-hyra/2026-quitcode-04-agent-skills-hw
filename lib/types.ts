@@ -98,3 +98,24 @@ export type AuditEntry = {
   leadId: string;
   at: string;
 };
+
+export type QuoteStatus = "queued" | "ready" | "failed";
+
+export type Quote = {
+  // Unguessable: the public status page /quotes/[id] is reachable by anyone with the link.
+  id: string;
+  company: string;
+  email: string;
+  description: string;
+  budget: number | null;
+  status: QuoteStatus;
+  // idempotency-key of our request to n8n: created once, reused on retries, and
+  // echoed back by the callback as data.requestIdempotencyKey.
+  requestKey: string;
+  correlationId: string;
+  documentUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type NewQuote = Pick<Quote, "company" | "email" | "description" | "budget">;
