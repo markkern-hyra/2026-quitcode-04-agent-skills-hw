@@ -103,14 +103,32 @@ macOS 26.6.2 · zsh · Node 22.20.0 · skills CLI 1.7.0
 | `server-after-nonblocking` | `after()` працює в Server Actions, Route Handlers і Server Components; у прикладі читає `headers()`/`cookies()` всередині `after` | `01-app/03-api-reference/04-functions/after.md:120` — у Server Components `cookies`/`headers` усередині `after` не можна; `after.md:302` — стабільний з v15.1.0 | Правдиво з уточненням: приклад з `headers()` в `after` годиться для Route Handler і Server Action, не для сторінки. У Task A не застосовуємо: виклик n8n в `app/actions.ts` переробляємо в Task D за контрактом n8n |
 | `server-serialization` | Передавати в Client Component лише ті поля, які він використовує | `01-app/02-guides/data-security.md:64` — мінімальні DTO; `:441` — «Only return what the UI needs, not raw database records» | Правдиво. Застосовуємо до `LeadsTable`: зараз отримує весь `Lead` разом з `internalNotes`, IP і `rawPayload` |
 
+**Після виправлень (Task A, крок 5).** Застосовано `async-parallel` (`c64a899`), `server-cache-react`
+(`122b909`), `server-serialization` (`97c8236`), `bundle-conditional` (`a6aca9b`), `bundle-dynamic-imports`
+(`186175d`, `ssr: false` — лише в Client Component) і `server-auth-actions` (`881c13b`); lint і build після
+кожного — без помилок. Числа й перевірки — у `docs/verification.md`. Не застосовано: `server-after-nonblocking`
+(виклик n8n — у Task D), `bundle-barrel-imports` для `recharts` (Next.js 16 робить це сам) і `lodash`
+(кандидат), решта знахідок рев'ю — поза обсягом (перелік у `docs/verification.md`).
+
 ## 6. Закріплення версії й коміт
 
 - Команда встановлення (запускає людина у своєму терміналі, не агент — див. розділ 3 про `--yes`):
   `DISABLE_TELEMETRY=1 npx skills@1.7.0 add vercel-labs/agent-skills#agent-skills-063bee94c3f4df8453406c830b0a7df0f2860278 --skill vercel-react-best-practices -a claude-code --copy`,
   Installation scope → **Project**.
-- Де лягли файли; справжні файли чи посилання: `.claude/skills/vercel-react-best-practices/` — справжні
-  файли завдяки `--copy`; без `.agents/` (перевірка після встановлення — у `docs/verification.md`).
-- Що потрапило в git: тека скіла (75 файлів) і `skills-lock.json` (джерело, тег, хеш).
+- Де лягли файли; справжні файли чи посилання: `.claude/skills/vercel-react-best-practices/` — 75 справжніх
+  файлів (`find … -type f | wc -l` → 75, `find .claude -type l` → 0), байт у байт як у переглянутому клоні
+  тега (`diff -rq` показує лише `metadata.json`, який CLI не копіює); `.agents/` у проєкті немає.
+- Що потрапило в git: тека скіла (75 файлів) і `skills-lock.json` (`source: vercel-labs/agent-skills`,
+  `ref: agent-skills-063bee94c3f4df8453406c830b0a7df0f2860278`, `computedHash`) — коміт `b8f6866`.
+- **Побічний ефект CLI, якого рев'ю не передбачило.** Наприкінці встановлення skills CLI 1.7.0 запропонував
+  глобальний скіл `find-skills` (з `vercel-labs/skills`, без тега), і його прийняли. Він ліг поза проєктом:
+  `~/.claude/skills/find-skills/SKILL.md` і запис у `~/.agents/.skill-lock.json`. Його `SKILL.md` радить агенту
+  шукати й ставити скіли самому — `npx skills add <owner/repo@skill> -g -y` (глобально, без підтвердження),
+  а спрацьовує на запити на кшталт «how do I do X». Це суперечить правилу безпеки проєкту (встановлення
+  скілів — лише після «так» людини), а як особистий скіл він був би видимий в обох прогонах A/B (Task D).
+  Видалили: `rm -rf ~/.claude/skills/find-skills`, запис у `~/.agents/.skill-lock.json` прибрали, прапорець
+  `dismissed.findSkillsPrompt` лишили, щоб CLI не пропонував його знову. Висновок: рев'ювати треба й сам
+  інструмент встановлення, а після `npx skills add` — перевіряти `~/.claude/skills` і `~/.agents/`.
 - Як оновлювати: та сама команда з новим тегом → `git diff -- .claude/skills/vercel-react-best-practices skills-lock.json`
   → рев'ю змін за цим чеклістом → коміт. Файли Vercel руками не редагуємо. `npx skills@1.7.0 experimental_install`
   для відновлення не годиться: пише лише в `.agents/skills/`, яку Claude Code не читає.
@@ -128,3 +146,5 @@ macOS 26.6.2 · zsh · Node 22.20.0 · skills CLI 1.7.0
    розділі 5.
 3. Не виконуємо команди з `README.md` скіла і `npx svgo` з `rendering-svg-precision`.
 4. Оновлюємо лише новим тегом, через рев'ю за цим чеклістом, без правок файлів Vercel руками.
+5. На пропозицію CLI поставити `find-skills` відповідаємо «ні»; після кожного `npx skills add` перевіряємо,
+   чи не з'явилось щось у `~/.claude/skills` і `~/.agents/` (див. розділ 6).
