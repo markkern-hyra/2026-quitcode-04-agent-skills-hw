@@ -31,14 +31,17 @@ metadata:
 
 ## Як робимо
 
-1. **Server Action — публічний POST-ендпоінт** (правило `server-auth-actions` зі скіла
-   `vercel-react-best-practices`). Першим рядком дії — перевірка сесії та прав: чи користувач увійшов і
+1. **Server Action — публічний POST-ендпоінт** (правило [`server-auth-actions`](../vercel-react-best-practices/rules/server-auth-actions.md)
+   зі скіла `vercel-react-best-practices`). Першим рядком дії — перевірка сесії та прав: чи користувач увійшов і
    чи запис належить його воркспейсу. `proxy.ts` (middleware) і те, що кнопку видно лише в дашборді, —
-   не захист. Публічна форма (заявка з сайту) — без сесії, але з тією самою серверною валідацією.
+   не захист. Публічна форма (заявка з сайту) — без сесії, але з тією самою серверною валідацією, а якщо кожна
+   відправка запускає щось дороге (лист, воркфлоу) — ще й з обмеженням частоти.
 2. **Валідація — на сервері, окремою чистою функцією** `parse<Name>Form(formData)` → `{ ok: true, data }`
    або `{ ok: false, errors, values }`: `trim()`, обмеження довжини кожного поля, формат, дозволені значення
-   зі списку. Невідомі поля ігноруємо; `Object.fromEntries(formData)` напряму в базу не пишемо. Атрибути
-   `required`/`maxLength` на полях лишаємо як підказку, але `<form noValidate>` — джерело правди сервер.
+   зі списку. Задовге значення — **помилка поля**, а не тихе `slice()`: обрізане пройшло б валідацію й
+   збереглося не таким, як його ввели. Невідомі поля ігноруємо; `Object.fromEntries(formData)` напряму в базу не
+   пишемо. Атрибути `required`/`maxLength` на полях лишаємо як підказку (скрінрідер оголосить обов'язкове поле),
+   але `<form noValidate>` — джерело правди сервер.
 3. **Клієнт — `useActionState`**: `const [state, formAction, pending] = useActionState(action, { status: "idle" })`,
    `<form action={formAction}>`. Такий компонент рендериться на сервері, тож форма працює й без JavaScript.
    **Id запису, до якого належить форма, — прихованим полем** `<input type="hidden" name="<сутність>Id" value={id} />`;
@@ -51,16 +54,25 @@ metadata:
      в елементі з цим `id` поруч із полем;
    - над формою після невдалої відправки — підсумок у `role="alert"` (скільки помилок і які поля);
    - колір — не єдина ознака помилки.
-5. **Введене не зникає.** React 19 скидає форму після завершення дії, тож дія при помилці повертає
-   `values` (лише введені рядки, без паролів і секретів), а поля мають `defaultValue={values.<поле>}`.
+5. **Введене не зникає — після будь-якої невдачі.** React 19 скидає форму після завершення дії, тож дія
+   повертає `values` (лише введені рядки, без паролів і секретів) і в `invalid`, і в `error`, а поля мають
+   `defaultValue={values.<поле>}`. Зміна `defaultValue` у вже змонтованого поля значення не повертає, тож форма
+   перемонтовується з новими `values`: `key` від стану (``key={`${state.status}:${JSON.stringify(values)}`}``).
+   Після редагування поля його стару помилку можна сховати до наступної відправки.
 6. **Дія повертає лише стан**: `{ status: "idle" | "invalid" | "error" | "ok", … }` — помилки полів, `values`,
-   id створеного запису. Не рядок з бази й не об'єкт помилки (правило `server-serialization`).
+   id створеного запису. Не рядок з бази й не об'єкт помилки (правило
+   [`server-serialization`](../vercel-react-best-practices/rules/server-serialization.md)). Результат запису теж перевіряємо: між перевіркою прав
+   і записом рядок могли видалити, тоді `false` від бази — це `error`, а не `ok`. Кнопки без форми (зміна статусу,
+   видалення) так само дивляться на `status` відповіді й ловлять відхилений виклик: при невдачі — повернути
+   попередній стан і показати помилку, а не переходити далі.
 7. **Журнали без персональних даних:** назва події, id запису, тривалість. Ніколи — `formData`, тіло запиту,
    ім'я, email, телефон, IP. Помилку логуємо назвою й кодом, а користувачу — `{ status: "error" }` без
    подробиць.
-8. **Повільне — в `after()`** з `next/server` (правило `server-after-nonblocking`): листи, сповіщення,
-   інтеграції, аудит. У `after` передаємо id і потрібні поля, а не весь запис. Те, без чого запис не має
-   сенсу, зберігаємо **до** відповіді, у самій дії.
+8. **Повільне — в `after()`** з `next/server` (правило
+   [`server-after-nonblocking`](../vercel-react-best-practices/rules/server-after-nonblocking.md)): листи, сповіщення, інтеграції, аудит. У `after`
+   передаємо id і потрібні поля, а не весь запис; помилку всередині `after` перехоплюємо (`try/catch`) і
+   журналюємо назвою — відповідь уже пішла, тож інакше збій ніхто не побачить. Те, без чого запис не має сенсу,
+   зберігаємо **до** відповіді, у самій дії.
 9. `pending` → кнопка `disabled` і текст «Надсилаємо…»; успіх — повідомлення в `role="status"`.
 
 Каркас (імена й поля — під задачу):
@@ -73,17 +85,23 @@ import { after } from "next/server";
 export type NoteFormState =
   | { status: "idle" }
   | { status: "invalid"; errors: Partial<Record<"text", string>>; values: { text?: string } }
-  | { status: "error" }
+  | { status: "error"; values: { text?: string } }
   | { status: "ok"; id: string };
 
 export async function addNote(_prev: NoteFormState, formData: FormData): Promise<NoteFormState> {
+  const typed = formData.get("text");
+  const values = { text: typeof typed === "string" ? typed : "" }; // 5. введене повертаємо за будь-якої невдачі
   const user = await requireUser();                 // 1. сесія й права — всередині дії
   const recordId = formData.get("recordId");        // id — з прихованого поля, не з .bind
-  if (typeof recordId !== "string" || !(await canEdit(user, recordId))) return { status: "error" };
-  const parsed = parseNoteForm(formData);           // 2. серверна валідація
+  if (typeof recordId !== "string" || !(await canEdit(user, recordId))) return { status: "error", values };
+  const parsed = parseNoteForm(formData);           // 2. серверна валідація, без обрізання
   if (!parsed.ok) return { status: "invalid", errors: parsed.errors, values: parsed.values };
   const note = await saveNote(recordId, parsed.data); // запис — до відповіді
-  after(() => notifyTeam(note.id));                 // 8. повільне — після відповіді
+  if (!note) return { status: "error", values };    // 6. запис не вдався (рядок видалили)
+  after(async () => {                               // 8. повільне — після відповіді
+    try { await notifyTeam(note.id); }
+    catch (error) { console.error("note.notify_failed", { id: note.id, error: (error as Error).name }); }
+  });
   return { status: "ok", id: note.id };             // 6. лише стан
 }
 ```
@@ -93,13 +111,14 @@ export async function addNote(_prev: NoteFormState, formData: FormData): Promise
 "use client";
 const [state, formAction, pending] = useActionState(addNote, { status: "idle" });
 const errors = state.status === "invalid" ? state.errors : {};
-const values = state.status === "invalid" ? state.values : {};
+const values = state.status === "invalid" || state.status === "error" ? state.values : {};
 
-<form action={formAction} noValidate>
+// key: після відповіді форма перемонтовується з повернутими values (React 19 скидає некеровані поля)
+<form key={`${state.status}:${JSON.stringify(values)}`} action={formAction} noValidate>
   <input type="hidden" name="recordId" value={recordId} />
   {state.status === "invalid" && <div role="alert">Перевірте поле «Нотатка».</div>}
   <label htmlFor="text">Нотатка</label>
-  <textarea id="text" name="text" maxLength={500} defaultValue={values.text}
+  <textarea id="text" name="text" required maxLength={500} defaultValue={values.text}
     aria-invalid={errors.text ? true : undefined}
     aria-describedby={errors.text ? "text-error" : undefined} />
   {errors.text && <p id="text-error">{errors.text}</p>}
@@ -109,17 +128,18 @@ const values = state.status === "invalid" ? state.values : {};
 
 ## Чекліст
 
-```
+```text
 - [ ] 1. Перевірка сесії й прав — у самій дії, до будь-якої роботи з даними (для внутрішніх форм).
-- [ ] 2. Валідація на сервері: trim, довжина кожного поля, формат, список дозволених значень.
+- [ ] 2. Валідація на сервері: trim, довжина кожного поля (задовге — помилка, не slice), формат, список значень.
 - [ ] 3. useActionState + <form action={formAction}>; форма відправляється з вимкненим JavaScript.
 - [ ] 4. У кожного поля <label htmlFor>; у поля з помилкою — aria-invalid і aria-describedby на текст помилки.
 - [ ] 5. Після невдалої відправки є підсумок у role="alert".
-- [ ] 6. Після помилки введені значення на місці (values + defaultValue).
-- [ ] 7. Дія повертає лише { status, … } — не рядок з бази.
+- [ ] 6. Після будь-якої невдачі (invalid і error) введені значення на місці: values + defaultValue + key.
+- [ ] 7. Дія повертає лише { status, … } — не рядок з бази; false від запису в базу — error, не ok.
 - [ ] 8. У журналах немає formData, імен, email, телефонів, IP.
-- [ ] 9. Листи, інтеграції, аудит — в after(), а не перед return.
+- [ ] 9. Листи, інтеграції, аудит — в after() з try/catch, а не перед return.
 - [ ] 10. Id запису — прихованим полем і перевіряється в дії; .bind дії в Client Component немає.
+- [ ] 11. Кнопки без форми перевіряють status відповіді й ловлять відхилений виклик; при невдачі — відкат і помилка.
 ```
 
 ## Правила зупинки — зупинись і спитай людину, якщо:
@@ -138,6 +158,7 @@ const values = state.status === "invalid" ? state.values : {};
 
 - [ ] `npm run lint` і `npm run build` без помилок.
 - [ ] Порожня відправка: біля полів — тексти помилок, над формою — підсумок, введене не зникло.
+- [ ] Задовге значення: помилка поля з лімітом, а не мовчки обрізаний текст; введене на місці й після `error`.
 - [ ] DevTools → Disable JavaScript: після «Надіслати» сторінка перезавантажується (а не «крутиться») і
   показує ті самі помилки чи успіх.
 - [ ] Дія без сесії (вийти з акаунта й повторити запит) відхиляється; чужий запис змінити не можна.
