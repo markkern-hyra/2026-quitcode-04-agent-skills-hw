@@ -3,10 +3,10 @@
 Реєстр подій між LeadDesk і n8n клієнта. Контракт (заголовки, конверт, підпис колбека, змінні `N8N_*`) —
 скіл `.claude/skills/integrating-n8n-webhooks`. Один рядок на подію.
 
-| Подія | Напрям | Режим | Вебхук n8n | Колбек | `data` у запиті | Хто запускає | Стан |
-|---|---|---|---|---|---|---|---|
-| `quote-request` | Next.js → n8n → Next.js | асинхронний: 202 + колбек (воркфлоу 40–90 с) | `POST ${N8N_WEBHOOK_BASE_URL}/quote-request` | `POST ${APP_BASE_URL}/api/n8n/quote-request`, події `quote-request.completed` / `quote-request.failed`, `data.result.documentUrl` — посилання на PDF | `quoteId`, `company`, `budget`, `description` (без email) | Server Action `requestQuote` (`app/quotes/actions.ts`), форма `/quotes/new`; статус — `/quotes/[id]` | за контрактом |
-| `lead-created` | Next.js → n8n | «до відома»: Immediately, без колбека | `POST ${N8N_WEBHOOK_BASE_URL}/lead-created` | — | `leadId`, `source` | Server Action `submitLead` (`app/actions.ts`), форма на `/` | за контрактом у коді; **воркфлоу в n8n треба оновити** (див. нижче) |
+| Подія | Напрям | Режим | Вебхук n8n | Колбек | `data` у запиті | Хто запускає | Власник | Стан |
+|---|---|---|---|---|---|---|---|---|
+| `quote-request` | Next.js → n8n → Next.js | асинхронний: 202 + колбек (воркфлоу 40–90 с) | `POST ${N8N_WEBHOOK_BASE_URL}/quote-request` | `POST ${APP_BASE_URL}/api/n8n/quote-request`, події `quote-request.completed` / `quote-request.failed`, `data.result.documentUrl` — посилання на PDF | `quoteId`, `company`, `budget`, `description` (без email) | Server Action `requestQuote` (`app/quotes/actions.ts`), форма `/quotes/new`; статус — `/quotes/[id]` | код — web-team LeadDesk (Markiyan Kernitsky); воркфлоу — адміністратор n8n Studio Nova | за контрактом |
+| `lead-created` | Next.js → n8n | «до відома»: Immediately, без колбека | `POST ${N8N_WEBHOOK_BASE_URL}/lead-created` | — | `leadId`, `source` | Server Action `submitLead` (`app/actions.ts`), форма на `/` | код — web-team LeadDesk (Markiyan Kernitsky); воркфлоу — адміністратор n8n Studio Nova | за контрактом у коді; **воркфлоу в n8n треба оновити** (див. нижче) |
 
 ## `quote-request`: що налаштувати в n8n клієнта
 
@@ -27,10 +27,14 @@
    вийшов — `"event":"quote-request.failed"`, `"status":"failed"`, `"error":{"code":…}` замість `result`.
 6. **Crypto** (v2): Hmac, SHA256, HEX від рядка `<ts>.<тіло>`, де `ts` — Unix-час у секундах; credential
    Crypto з Hmac Secret = значення `N8N_CALLBACK_SECRET`.
-7. **HTTP Request:** `POST` на `callbackUrl` з тіла запиту. Заголовки: `x-n8n-timestamp` = `ts`,
-   `x-n8n-signature` = `sha256=` + результат Crypto, `idempotency-key` = `<jobId>:<event>` (ті самі значення,
-   що в тілі), `x-correlation-id` — з вхідного запиту. Body — Raw, `application/json`, **той самий рядок**, що
-   підписаний. Timeout 10000; Retry On Fail — 3 спроби, пауза 1000 мс.
+7. **HTTP Request:** `POST` на фіксовану адресу LeadDesk (змінна n8n, напр. `LEADDESK_BASE_URL`, +
+   `/api/n8n/quote-request`), а не на `callbackUrl` з тіла як є: інакше власник чинного токена міг би
+   спрямувати запит n8n на довільний хост. Якщо адреса все ж береться з тіла — спершу IF: вона починається з
+   origin LeadDesk. Заголовки: `x-n8n-timestamp` = `ts`, `x-n8n-signature` = `sha256=` + результат Crypto,
+   `idempotency-key` = `<jobId>:<event>` (ті самі значення, що в тілі: для гілки помилки —
+   `<jobId>:quote-request.failed`, інакше LeadDesk відповість 400), `x-correlation-id` — з вхідного запиту.
+   Body — Raw, `application/json`, **той самий рядок**, що підписаний. Timeout 10000; Retry On Fail — 3 спроби,
+   пауза 1000 мс (на 409 «ще обробляється» теж повторювати).
 8. Save і **Publish** (після кожної зміни — Publish знову).
 
 ## `lead-created`: що змінилося й що оновити в n8n

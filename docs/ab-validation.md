@@ -74,8 +74,9 @@
   діф: `docs/ab/a-without-skill.diff`
 - Змінні середовища, які додав агент: `N8N_QUOTE_WEBHOOK_URL`, `APP_URL` (старий `N8N_WEBHOOK_URL` з тестовим
   URL лишився).
-- `check-contract.mjs --root ../leaddesk-ab-a --changed-since base` (скрипт зі скіла на BASE):
-  ```
+- `check-contract.mjs --root ../leaddesk-ab-a --changed-since base` (поточна версія скрипта; версія на BASE дала
+  ті самі 8 FAIL за тими самими id):
+  ```text
   check-contract (n8n) - root: …/leaddesk-ab-a - changed since base (13 file(s) changed)
   C1   PASS  No test webhook URLs (/webhook-test/) in code or .env.example (1 finding(s) in unchanged code ignored)
   C2   PASS  n8n variables stay server-only (no NEXT_PUBLIC_N8N_*)
@@ -83,31 +84,31 @@
         app/quotes/actions.ts:30 - request to n8n outside lib/n8n/client.ts
   C4   PASS  Every request to n8n has a timeout (signal: AbortSignal.timeout(...)) (1 finding(s) in unchanged code ignored)
   C5   FAIL  Requests to n8n send x-n8n-token, idempotency-key and x-correlation-id (1 finding(s) in unchanged code ignored)
-        app/quotes/actions.ts:30 - missing header(s): x-n8n-token, idempotency-key, x-correlation-id
+        app/quotes/actions.ts:30 - missing header(s) on this request: x-n8n-token, idempotency-key, x-correlation-id
   C6   FAIL  The request body is an envelope {version, event, data}, not a raw record (1 finding(s) in unchanged code ignored)
         app/quotes/actions.ts:30 - the body is not an envelope { version: 1, event, data }
   C7   FAIL  Server Actions do not wait for n8n (the call runs inside after()) (1 finding(s) in unchanged code ignored)
         app/quotes/actions.ts:30 - the Server Action waits for n8n: move the call into after()
   C8   PASS  Callback reads the raw body (request.text()) and parses JSON only after the signature check
-  C9   FAIL  Callback signature: HMAC with a length check + timingSafeEqual, never === (1 finding(s) in unchanged code ignored)
+  C9   FAIL  Callback signature: HMAC with a length check + timingSafeEqual, never ===
+        lib/quote-callback.ts:18 - no HMAC of the body: verify sha256=HMAC(N8N_CALLBACK_SECRET, "<timestamp>.<raw body>")
         lib/quote-callback.ts:18 - timingSafeEqual without a length check (it throws on different lengths)
   C10  FAIL  Callback rejects a stale x-n8n-timestamp (300 s window)
         app/api/quotes/[id]/callback/route.ts:37 - a stale x-n8n-timestamp is not rejected: the POST handler must check the 300 s window
   C11  FAIL  Callback claims idempotency-key and ties it to data.jobId and the event
-        app/api/quotes/[id]/callback/route.ts:37 - idempotency-key is not claimed or not checked against data.jobId and the event
+        app/api/quotes/[id]/callback/route.ts:37 - idempotency-key is not claimed in the POST handler
   C12  PASS  No edge runtime (export const runtime = "edge")
   C13  FAIL  .env.example has N8N_WEBHOOK_BASE_URL (.../webhook), N8N_WEBHOOK_TOKEN, N8N_CALLBACK_SECRET, APP_BASE_URL; secrets are change-me-...
-        .env.example - missing key(s): N8N_WEBHOOK_BASE_URL, N8N_WEBHOOK_TOKEN, N8N_CALLBACK_SECRET, APP_BASE_URL
+        .env.example:1 - missing key(s): N8N_WEBHOOK_BASE_URL, N8N_WEBHOOK_TOKEN, N8N_CALLBACK_SECRET, APP_BASE_URL
   C14  PASS  No request bodies, personal data or secrets in console.* logs
   Result: 6 PASS, 8 FAIL, 0 N/A
   ```
-  Два зауваження до C9 (саме вони привели до виправлення скрипта — див. «Перенесення»): рядок про довжину тут
-  формальний — обидва буфери є sha256 фіксованої довжини, `timingSafeEqual` не впаде; справжня розбіжність
-  із контрактом — **немає HMAC тіла**, а версія на BASE цього не помічала. Проігнорована знахідка C9 «in
-  unchanged code» — хибна (`lib/db.ts`, `assignedTo: status === "new"`). Скрипт після виправлення (`33c2abd`)
-  дає ті самі 8 FAIL, у C9 — `no HMAC of the body` і без хибної знахідки.
+  Зауваження до C9: рядок про довжину тут формальний — обидва буфери є sha256 фіксованої довжини,
+  `timingSafeEqual` не впаде; справжня розбіжність із контрактом — **немає HMAC тіла**. Версія скрипта на BASE
+  цього не бачила, а в незміненому коді давала хибну знахідку C9 (`lib/db.ts`, `assignedTo: status === "new"`);
+  обидва виправлено в `33c2abd`.
 - Журнал мока:
-  ```
+  ```text
   POST /webhook/quote-request -> 403 in 1 ms auth=missing | headers: accept,accept-language,content-type,user-agent | body 355 B sha256=26b51036…
   ```
   URL — `/webhook/` (не тестовий). Заголовка токена немає → n8n (Header Auth) відхиляє, воркфлоу не
@@ -155,7 +156,7 @@
 - Змінні середовища, які додав агент: `N8N_WEBHOOK_BASE_URL`, `N8N_WEBHOOK_TOKEN`, `N8N_CALLBACK_SECRET`,
   `APP_BASE_URL` (секрети в `.env.example` — `change-me-…`); `N8N_WEBHOOK_URL` прибрав.
 - `check-contract.mjs --root ../leaddesk-ab-b --changed-since base`:
-  ```
+  ```text
   check-contract (n8n) - root: …/leaddesk-ab-b - changed since base (18 file(s) changed)
   C1   PASS  No test webhook URLs (/webhook-test/) in code or .env.example
   C2   PASS  n8n variables stay server-only (no NEXT_PUBLIC_N8N_*)
@@ -176,7 +177,7 @@
   Увесь код копії (без `--changed-since`) — теж 14 PASS, 0 FAIL: старі FAIL базової лінії агент прибрав.
   Однаково в скрипті на BASE і після виправлення.
 - Журнал мока:
-  ```
+  ```text
   POST /webhook/quote-request -> 202 in 1 ms auth=ok idempotency=new | headers: accept,accept-language,content-type,idempotency-key,user-agent,x-correlation-id,x-n8n-token | body 264 B sha256=b2320328…
   workflow 339d1dfc-… running for 5000 ms, then callback event=quote-request.completed
   callback POST http://127.0.0.1:3000/api/n8n/quote-request -> 202 in 206 ms (try 1/3) event=quote-request.completed body 382 B sha256=a2d9b51b…
@@ -232,7 +233,7 @@
 - `npm run lint`, `npm run build` на гілці: без помилок і попереджень (у збірці — `ƒ /api/n8n/[event]`,
   `ƒ /quotes/[id]`, `○ /quotes/new`).
 - `check-contract.mjs` на фінальному коді (увесь код, скрипт після `33c2abd`):
-  ```
+  ```text
   check-contract (n8n) - root: …/2026-quitcode-04-agent-skills-hw - whole project
   C1   PASS  No test webhook URLs (/webhook-test/) in code or .env.example
   C2   PASS  n8n variables stay server-only (no NEXT_PUBLIC_N8N_*)
