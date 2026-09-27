@@ -37,27 +37,35 @@ metadata:
   `lib/n8n/client.ts`, перший рядок якого — `import "server-only"`. Заголовки: `content-type: application/json`,
   `x-n8n-token`, `idempotency-key` (UUID, створений **один раз** на операцію й збережений із записом),
   `x-correlation-id`. Тіло — конверт `{ "version": 1, "event", "data", "callbackUrl" }`; `data` — мінімум
-  для воркфлоу, не рядок з бази.
+  для воркфлоу, не рядок з бази. Адреса — лише `https://` (`http://` — тільки `127.0.0.1`/`localhost`),
+  `redirect: "error"`: токен не йде за перенаправленням.
 - **Таймаут і повтори:** кожна спроба — `signal: AbortSignal.timeout(10_000)`; не більше 2 повторів
   (пауза 1 с, потім 3 с) лише на мережеву помилку, таймаут, 5xx і 524, з тим самим `idempotency-key`.
-  4xx не повторюємо. Дивимось лише на код статусу, текст відповіді не парсимо.
+  4xx і помилки конфігурації (змінна відсутня чи хибна) не повторюємо: конфігурацію перевіряємо до циклу.
+  Дивимось лише на код статусу, текст відповіді не парсимо.
 - **Режим:** усе, що може тривати до 100 с або довше (чи тривалість невідома), — асинхронно: n8n
-  відповідає **202**, результат приходить колбеком на `POST /api/n8n/<event>`.
-- **Колбек** (`app/api/n8n/[event]/route.ts`), саме в такому порядку: невідома подія → 404, не JSON → 415,
-  `content-length` > 64 КБ → 413 (усе до читання тіла) → `await request.text()` → > 64 КБ → 413 →
-  `x-n8n-timestamp` далі ніж ±300 с → 401 → підпис `sha256=<hex HMAC-SHA256(N8N_CALLBACK_SECRET, "${timestamp}.${raw}")>`
-  через перевірку довжини й `timingSafeEqual` (секрет-заглушка чи коротший за 32 символи — теж 401) → 401 →
-  «застовпити» `idempotency-key` (вже був → 200 `{"duplicate":true}`) → лише тепер `JSON.parse` і перевірка форми,
-  події й `idempotency-key === ${data.jobId}:${event}` → 400 (звільнити ключ) → зберегти стан дозволеним
-  переходом (пізній `failed` не стирає `ready`) → **202** `{"ok":true}` → повільне в `after()`.
+  відповідає **202** (інший 2xx — колбека не буде, це збій), результат приходить колбеком на
+  `POST /api/n8n/<event>`. Без придатного `N8N_CALLBACK_SECRET` такий воркфлоу не запускаємо.
+- **Колбек** (`app/api/n8n/[event]/route.ts`), саме в такому порядку: невідома подія → 404, тип не рівно
+  `application/json` → 415, `content-length` > 64 КБ → 413 (усе до читання тіла) → сире тіло потоком з лімітом
+  64 КБ (понад — 413) → `x-n8n-timestamp` далі ніж ±300 с → 401 → підпис
+  `sha256=<hex HMAC-SHA256(N8N_CALLBACK_SECRET, "${timestamp}.${raw}")>` через перевірку довжини й
+  `timingSafeEqual` (секрет-заглушка чи коротший за 32 символи — теж 401) → 401 → «застовпити» `idempotency-key`
+  (вже збережено → 200 `{"duplicate":true}`, ще обробляється → 409) → лише тепер `JSON.parse` і перевірка форми:
+  подія = `<подія>.<data.status>`, `completed` з http(s)-посиланням, `failed` з `error.code`,
+  `idempotency-key === ${data.jobId}:${event}` → 400 (звільнити ключ) → зберегти стан дозволеним переходом
+  (пізній `failed` не стирає `ready`) → **202** `{"ok":true}` → повільне в `after()`.
 
 ## Як робимо
 
 1. **`lib/n8n/client.ts`** — один модуль з `import "server-only"`: функція запуску воркфлоу з конвертом,
    заголовками, таймаутом і повторами. Готовий шаблон — `references/code-templates.md`.
 2. **Server Action** — публічний POST-ендпоінт: перевірка прав і валідація всередині (правило
-   `server-auth-actions` зі скіла Vercel). Дія зберігає запис зі статусом `queued` і своїм `idempotency-key`,
-   повертає лише `{ status, id }`, а виклик n8n з повторами — в `after()` (правило `server-after-nonblocking`).
+   [`server-auth-actions`](../vercel-react-best-practices/rules/server-auth-actions.md) зі скіла Vercel). Дія
+   зберігає запис зі статусом `queued` і своїм `idempotency-key`, повертає лише `{ status, id }`, а виклик n8n
+   з повторами — в `after()` (правило
+   [`server-after-nonblocking`](../vercel-react-best-practices/rules/server-after-nonblocking.md)); виняток
+   конфігурації всередині `after()` перехоплюємо й переводимо запис у `failed`, інакше він лишиться `queued`.
    Next.js виконує дії одного клієнта по черзі: очікування n8n заблокувало б і наступні.
 3. **Колбек-роут** `app/api/n8n/[event]/route.ts` — за порядком вище; запис знаходимо за
    `data.requestIdempotencyKey` (це ключ нашого запиту), `idempotency-key` колбека зберігаємо в сховищі з
@@ -73,15 +81,18 @@ metadata:
 
 ## Чекліст
 
-```
+```text
 - [ ] 1. Усі виклики n8n — лише з lib/n8n/client.ts; перший рядок — import "server-only".
 - [ ] 2. Жодного NEXT_PUBLIC_N8N_*, жодного /webhook-test/ у коді й .env.example.
-- [ ] 3. Заголовки x-n8n-token, idempotency-key, x-correlation-id; тіло — конверт {version, event, data}.
-- [ ] 4. AbortSignal.timeout(10_000); ≤ 2 повтори лише на мережу/таймаут/5xx/524, той самий ключ.
-- [ ] 5. Server Action не чекає n8n: виклик — в after(), відповідь — { status, id }.
-- [ ] 6. Довгий воркфлоу — 202 + колбек; callbackUrl = ${APP_BASE_URL}/api/n8n/<event>.
-- [ ] 7. Колбек: content-length → request.text() → розмір → час ±300 с → HMAC з перевіркою довжини й timingSafeEqual — до JSON.parse.
-- [ ] 8. idempotency-key колбека застовплено й звірено з ${data.jobId}:${event}; при помилці — звільнено.
+- [ ] 3. Заголовки x-n8n-token, idempotency-key, x-correlation-id у кожному запиті; тіло — конверт {version, event, data}.
+- [ ] 4. AbortSignal.timeout(10_000) у кожному запиті; ≤ 2 повтори лише на мережу/таймаут/5xx/524, той самий ключ;
+         конфігурацію перевірено до повторів; https (http — лише loopback); redirect: "error".
+- [ ] 5. Server Action не чекає n8n: виклик — в after() з try/catch, відповідь — { status, id }.
+- [ ] 6. Довгий воркфлоу — 202 (інший 2xx — збій) + колбек; callbackUrl = ${APP_BASE_URL}/api/n8n/<event>.
+- [ ] 7. Колбек: тип рівно application/json → content-length → сире тіло з лімітом 64 КБ під час читання →
+         час ±300 с → HMAC з перевіркою довжини й timingSafeEqual — до JSON.parse.
+- [ ] 8. idempotency-key застовплено (done → 200, processing → 409) й звірено з ${data.jobId}:${event};
+         подія = <подія>.<data.status>, у completed — http(s)-посилання, у failed — error.code; при помилці — звільнено.
 - [ ] 9. Стан збережено до відповіді 202 дозволеним переходом (пізній failed не стирає ready); повільне — в after().
 - [ ] 10. Ніде немає runtime = "edge"; у журналах немає тіл, персональних даних і секретів.
 ```
@@ -118,8 +129,8 @@ metadata:
   клієнта й дії.
 - `references/callback.md` — колбек крок за кроком: коди, чому саме такий порядок, ідемпотентність.
 - `references/response-modes.md` — режими відповіді вебхука, ліміт 100 с / 524, тестовий і production URL.
-- `references/code-templates.md` — шаблони `lib/n8n/client.ts`, підпису, колбек-роуту, Server Action,
-  `.env.example`.
+- `references/code-templates.md` — шаблони `lib/n8n/client.ts`, підпису, читання тіла з лімітом,
+  ідемпотентності, колбек-роуту, Server Action, `.env.example`.
 - `references/logging-and-limits.md` — що писати в журнал і чого ніколи; ліміти.
 - `references/n8n-setup.md` — налаштування вузлів n8n словами (для адміністратора n8n клієнта).
 - `references/pitfalls.md` — відомі пастки документації й чужих скілів, межі скіла.

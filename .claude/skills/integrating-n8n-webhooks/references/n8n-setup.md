@@ -18,13 +18,21 @@
    Тіло підписуємо й відправляємо **одним і тим самим рядком**.
 6. **Crypto** (v2): Action `Hmac`, Type `SHA256`, Encoding `HEX`, значення `{{ $json.ts + '.' + $json.body }}`,
    credential **Crypto** з Hmac Secret = `N8N_CALLBACK_SECRET`.
-7. **HTTP Request:** `POST` на `callbackUrl` із запиту (`{{ $('Webhook').item.json.body.callbackUrl }}`).
+7. **HTTP Request:** `POST` на **фіксовану** адресу застосунку — змінна n8n (напр. `LEADDESK_BASE_URL`) +
+   `/api/n8n/quote-request`, а не `callbackUrl` із тіла як є: інакше будь-хто з чинним токеном міг би спрямувати
+   запит n8n на довільний хост (SSRF, зокрема у внутрішню мережу n8n). Якщо адреса мусить іти з тіла — спершу
+   вузол IF: `callbackUrl` починається з дозволеного origin застосунку, інакше зупинити виконання.
    Заголовки: `x-n8n-timestamp` (= `ts`), `x-n8n-signature` (`sha256=` + результат Crypto), `idempotency-key`
    (`{{ $execution.id }}:quote-request.completed` — ті самі `jobId` і `event`, що в тілі), `x-correlation-id`
    (з вхідних заголовків). Body Content Type — **Raw**, Content Type `application/json`, Body — поле `body`.
    Options → Timeout `10000`. Settings → Retry On Fail, Max Tries `3`, Wait Between Tries `1000`.
    Якщо n8n у Docker, а застосунок на хості, — `host.docker.internal`, не `localhost`.
-8. **Save** і **Publish**. Після кожної зміни — Publish знову.
+8. **Гілка помилки** (Settings → On Error: Continue (using error output) у робочих вузлах, або Error Trigger):
+   той самий Edit Fields → Crypto → HTTP Request, але `event: 'quote-request.failed'`, `status: 'failed'`,
+   `error: { code: … }` замість `result`, і **свій** `idempotency-key` —
+   `{{ $execution.id }}:quote-request.failed`. Із ключем `…completed` застосунок відповість 400: ключ мусить
+   дорівнювати `jobId` і події з підписаного тіла.
+9. **Save** і **Publish**. Після кожної зміни — Publish знову.
 
 Чому Raw, а не «JSON → Using Fields Below»: документація n8n не гарантує, що серіалізація полів дасть точно
 ті самі байти, що ми підписали.

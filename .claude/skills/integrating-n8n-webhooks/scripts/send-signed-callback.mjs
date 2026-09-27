@@ -28,9 +28,10 @@ Environment (never pass secrets as flags):
 Cases (expected code):
   unknown event in the path                        404
   inherited property as the event (/constructor)   404  (handler lookup must use own keys only)
-  content-type text/plain                          415
+  content-type text/plain / application/jsonp      415
   body larger than 64 KB                           413
   declares 1 MB (content-length), sends 1 KB       413 within 2 s  (size is checked before the body is read)
+  chunked, 70 KB sent, stream left open            413 within 2 s  (the body is read with a limit)
   timestamp 10 min in the past / in the future     401
   no x-n8n-timestamp / no x-n8n-signature          401
   signature made with another secret               401
@@ -39,6 +40,9 @@ Cases (expected code):
   no idempotency-key                               400
   idempotency-key is not <jobId>:<event>, twice    400, 400  (the key is released after a 400)
   event in the body is not the path's event        400
+  event says .completed, data.status says failed   400
+  completed without a document link / javascript:  400
+  failed without error.code                        400
   signed body is not JSON                          400
   valid callback, then the same again              202, 200 {"duplicate":true}  (only with --request-key)
 
@@ -137,8 +141,10 @@ const cases = [
   ["inherited property as the event (/constructor)", [404], () =>
     callback({ url: urlFor("constructor"), body: callbackBody({ bodyEvent: "constructor.completed" }) })],
   ["content-type text/plain", [415], () => callback({ contentType: "text/plain" })],
+  ["content-type application/jsonp", [415], () => callback({ contentType: "application/jsonp" })],
   ["body larger than 64 KB", [413], () => callback({ body: callbackBody({ extra: { padding: "x".repeat(65 * 1024) } }) })],
   ["declares 1 MB (content-length), sends 1 KB", [413], () => null, sendDeclaredTooLarge],
+  ["chunked, 70 KB sent, stream left open", [413], () => null, sendChunkedTooLarge],
   ["timestamp 10 min in the past", [401], () => callback({ timestamp: String(now() - 600) })],
   ["timestamp 10 min in the future", [401], () => callback({ timestamp: String(now() + 600) })],
   ["no x-n8n-timestamp", [401], () => callback({ omit: ["x-n8n-timestamp"] })],
@@ -157,6 +163,13 @@ const cases = [
   ["idempotency-key is not <jobId>:<event>, sent twice", [400, 400], () => callback({ key: randomUUID() })],
   ["event in the body is not the path's event", [400], () =>
     callback({ body: callbackBody({ bodyEvent: "another-event.completed" }) })],
+  ["event says .completed, data.status says failed", [400], () =>
+    callback({ body: callbackBody({ extra: { status: "failed", error: { code: "x" } } }) })],
+  ["completed without a document link", [400], () => callback({ body: callbackBody({ extra: { result: {} } }) })],
+  ["completed with a javascript: link", [400], () =>
+    callback({ body: callbackBody({ extra: { result: { documentUrl: "javascript:alert(1)" } } }) })],
+  ["failed without error.code", [400], () =>
+    callback({ body: callbackBody({ bodyEvent: `${event}.failed`, extra: { status: "failed", result: undefined } }) })],
   ["signed body is not JSON", [400], () => callback({ raw: "not json" })],
 ];
 if (args["request-key"]) {
@@ -176,9 +189,17 @@ async function send({ url, headers, text }) {
   return { status: response.status, duplicate };
 }
 
-// Declares a 1 MB body and sends only 1 KB of it. A route that checks content-length answers 413
-// at once; a route that reads the whole body first keeps waiting for the rest.
+// Sends the headers and the start of a body but never finishes it. A route that checks the size
+// before (or while) reading answers 413 at once; one that reads the whole body first keeps waiting.
 function sendDeclaredTooLarge() {
+  return sendUnfinished({ "content-type": "application/json", "content-length": String(1024 * 1024) }, 1000);
+}
+
+function sendChunkedTooLarge() {
+  return sendUnfinished({ "content-type": "application/json", "transfer-encoding": "chunked" }, 70 * 1024);
+}
+
+function sendUnfinished(headers, bytes) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const settle = (fn, value) => {
@@ -188,10 +209,7 @@ function sendDeclaredTooLarge() {
       fn(value);
     };
     const client = target.protocol === "https:" ? https : http;
-    const req = client.request(target, {
-      method: "POST",
-      headers: { "content-type": "application/json", "content-length": String(1024 * 1024) },
-    });
+    const req = client.request(target, { method: "POST", headers });
     const timer = setTimeout(() => {
       settle(resolve, { status: "no answer in 2 s", duplicate: false });
       req.destroy();
@@ -205,7 +223,7 @@ function sendDeclaredTooLarge() {
       if (error.code === "ECONNREFUSED") settle(reject, error);
       else settle(resolve, { status: `connection closed (${error.code})`, duplicate: false });
     });
-    req.write(`{"padding":"${"x".repeat(1000)}`);
+    req.write(`{"padding":"${"x".repeat(bytes)}`);
   });
 }
 

@@ -72,6 +72,8 @@ if (args.help) {
   process.exit(0);
 }
 
+if (args.root === "") usageError("--root needs a directory");
+if (args["changed-since"] === "") usageError("--changed-since needs a git ref, e.g. --changed-since base");
 const root = path.resolve(args.root ?? process.cwd());
 if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) usageError(`--root is not a directory: ${root}`);
 
@@ -239,7 +241,69 @@ const envLines = envText === null ? [] : envText.split(/\r?\n/);
 
 const findings = new Map(CHECKS.map(([id]) => [id, []]));
 const notApplicable = new Map();
-const fail = (id, rel, line, message) => findings.get(id).push({ rel, line, message });
+// fileLevel: a finding about the whole file (a missing key); it is reported at line 1 and, with
+// --changed-since, counts whenever the file changed.
+const fail = (id, rel, line, message, fileLevel = false) => findings.get(id).push({ rel, line, message, fileLevel });
+
+const escapeRe = (s) => s.replace(/[$.*+?^()[\]{}|\\]/g, "\\$&");
+
+// [start, end) of what `name` is initialized to (const/let/var), in file coordinates; null if not found.
+function declarationRange(f, name) {
+  const m = new RegExp(`(?:const|let|var)\\s+${escapeRe(name)}\\s*(?::[^=;]+)?=\\s*`).exec(f.code);
+  if (!m) return null;
+  const start = m.index + m[0].length;
+  let depth = 0;
+  for (let j = start; j < f.code.length; j++) {
+    const c = f.code[j];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) return [start, j];
+      depth--;
+    } else if ((c === ";" || c === "\n") && depth === 0) return [start, j];
+  }
+  return [start, f.code.length];
+}
+
+// [start, end) of the value of `prop` in the object literal at [from, to); shorthand `prop` -> the name.
+function propertyRange(f, [from, to], prop) {
+  const re = new RegExp(`(?<![\\w$.])${escapeRe(prop)}\\s*(:|(?=\\s*[,}]))`, "g");
+  re.lastIndex = from;
+  const m = re.exec(f.code);
+  if (!m || m.index >= to) return null;
+  if (m[1] !== ":") return [m.index, m.index + prop.length];
+  const start = m.index + m[0].length;
+  let depth = 0;
+  for (let j = start; j < to; j++) {
+    const c = f.code[j];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) return [start, j];
+      depth--;
+    } else if (c === "," && depth === 0) return [start, j];
+  }
+  return [start, to];
+}
+
+const exprAt = (f, [a, b]) => f.code.slice(a, b).trim();
+
+// Follows a bare identifier to what it is initialized to (a few hops); other expressions stay.
+function resolveRange(f, range) {
+  for (let hop = 0; hop < 3 && range; hop++) {
+    const expr = exprAt(f, range);
+    if (!/^[\w$]+$/.test(expr)) return range;
+    range = declarationRange(f, expr);
+  }
+  return range;
+}
+
+// The options object of a fetch call: the literal passed in, or the one its variable is set to.
+function optionsRange(call) {
+  const { f, open, close } = call;
+  const comma = firstTopLevelComma(f.code, open + 1, close);
+  if (comma >= close) return null;
+  const range = resolveRange(f, [comma + 1, close]);
+  return range && exprAt(f, range).startsWith("{") ? range : null;
+}
 
 const isClientModule = (rel) => /^(?:src\/)?lib\/n8n\/client\.[cm]?[jt]sx?$/.test(rel);
 const isN8nModule = (rel) => /^(?:src\/)?lib\/n8n\//.test(rel);
@@ -275,7 +339,7 @@ for (const f of files) {
       referencesN8nEnv(f) ||
       /n8n|webhook/i.test(firstArg) ||
       /n8n|webhook/i.test(linesAbove(f, line, 10));
-    if (isN8n) n8nCalls.push({ f, index: m.index, line, args: f.text.slice(open + 1, close) });
+    if (isN8n) n8nCalls.push({ f, index: m.index, line, open, close, args: f.text.slice(open + 1, close) });
   }
 }
 const clientModules = files.filter((f) => isClientModule(f.rel));
@@ -300,29 +364,79 @@ if (n8nCalls.length === 0 && clientModules.length === 0) {
   }
 }
 
-// C4 - timeout on every request
+// C4 - timeout on every request: this call's own signal is (or is set to) AbortSignal.timeout(...)
 if (n8nCalls.length === 0) notApplicable.set("C4", "no requests to n8n found");
 for (const call of n8nCalls) {
-  const inArgs = /AbortSignal\s*\.\s*timeout\s*\(/.test(call.args);
-  const viaVariable = /\bsignal\b/.test(call.args) && /AbortSignal\s*\.\s*timeout\s*\(/.test(linesAbove(call.f, call.line, 15));
-  if (!inArgs && !viaVariable) fail("C4", call.f.rel, call.line, "no timeout: add signal: AbortSignal.timeout(10_000)");
+  const opts = optionsRange(call);
+  const signal = opts && resolveRange(call.f, propertyRange(call.f, opts, "signal") ?? [0, 0]);
+  const timed = signal && /AbortSignal\s*\.\s*timeout\s*\(/.test(exprAt(call.f, signal));
+  if (!timed) fail("C4", call.f.rel, call.line, "no timeout on this request: add signal: AbortSignal.timeout(10_000)");
 }
 
-// C5 - headers, C6 - envelope
+// C5 - headers of each request, C6 - envelope as its body
 if (n8nCalls.length === 0) {
   notApplicable.set("C5", "no requests to n8n found");
   notApplicable.set("C6", "no requests to n8n found");
 }
 const n8nModuleText = files.filter((f) => isN8nModule(f.rel)).map((f) => f.noComments).join("\n");
-for (const [rel, calls] of callsByFile) {
-  const f = byRel.get(rel);
+for (const call of n8nCalls) {
+  const { f } = call;
+  const opts = optionsRange(call);
+  const headersAt = opts && propertyRange(f, opts, "headers");
+  let headerText = "";
+  if (headersAt) {
+    const range = resolveRange(f, headersAt);
+    headerText = range ? f.noComments.slice(range[0], range[1]) : "";
+    // headers spread from another object: { ...baseHeaders, ... }
+    for (const m of matches(exprAt(f, range ?? headersAt), /\.\.\.\s*([\w$]+)/)) {
+      const spread = declarationRange(f, m[1]);
+      if (spread) headerText += f.noComments.slice(spread[0], spread[1]);
+    }
+  }
   const missing = ["x-n8n-token", "idempotency-key", "x-correlation-id"].filter(
-    (header) => !new RegExp(header, "i").test(f.noComments),
+    (header) => !new RegExp(header, "i").test(headerText),
   );
-  if (missing.length) fail("C5", rel, calls[0].line, `missing header(s): ${missing.join(", ")}`);
-  const pool = isN8nModule(rel) ? n8nModuleText : f.noComments;
-  const envelope = /\bversion\s*:\s*\d/.test(pool) && /\bevent\s*[:,}]/.test(pool) && /\bdata\s*[:,}]/.test(pool);
-  if (!envelope) fail("C6", rel, calls[0].line, "the body is not an envelope { version: 1, event, data }");
+  if (missing.length) fail("C5", f.rel, call.line, `missing header(s) on this request: ${missing.join(", ")}`);
+
+  // Follow body -> JSON.stringify(x) -> x -> ... -> the object literal, noting the variables passed.
+  let range = opts && propertyRange(f, opts, "body");
+  let object = null;
+  const passed = [];
+  for (let hop = 0; hop < 6 && range; hop++) {
+    const expr = exprAt(f, range);
+    if (/^[\w$]+$/.test(expr)) {
+      passed.push(expr);
+      range = declarationRange(f, expr);
+      continue;
+    }
+    if (expr.startsWith("{")) {
+      object = expr;
+      break;
+    }
+    if (!/^JSON\s*\.\s*stringify\s*\(/.test(expr)) break;
+    const open = f.code.indexOf("(", range[0] + f.code.slice(range[0], range[1]).indexOf("JSON"));
+    const close = matchClose(f.code, open);
+    range = [open + 1, firstTopLevelComma(f.code, open + 1, close)];
+  }
+  const hasEnvelopeKeys = (text) =>
+    /\bversion\s*:\s*\d/.test(text) && /\bevent\s*[:,}]/.test(text) && /\bdata\s*[:,}]/.test(text);
+  let envelope;
+  if (object !== null) {
+    envelope = hasEnvelopeKeys(object);
+  } else {
+    // Not resolvable to a literal (e.g. a parameter): if the file builds an envelope in a variable,
+    // the body must be that variable; otherwise look for the envelope keys in the module.
+    const built = [...matches(f.code, /(?:const|let|var)\s+([\w$]+)\s*(?::[^=;]+)?=\s*\{/)]
+      .map((m) => m[1])
+      .filter((name) => {
+        const r = declarationRange(f, name);
+        return r && hasEnvelopeKeys(exprAt(f, r));
+      });
+    envelope = built.length
+      ? passed.some((name) => built.includes(name))
+      : hasEnvelopeKeys(isN8nModule(f.rel) ? n8nModuleText : f.noComments);
+  }
+  if (!envelope) fail("C6", f.rel, call.line, "the body is not an envelope { version: 1, event, data }");
 }
 
 // C7 - Server Actions do not wait for n8n
@@ -477,8 +591,10 @@ for (const route of callbackRoutes) {
   for (const m of matches(route.code, /\b(?:req|request)\s*\.\s*json\s*\(/)) {
     fail("C8", route.rel, lineOf(route, m.index), "request.json() re-serializes the body: read request.text() and verify the signature first");
   }
-  if (!/\.\s*(?:text|arrayBuffer)\s*\(\s*\)/.test(body)) {
-    fail("C8", route.rel, handlerLine, "the body is not read as raw text (await request.text())");
+  // Raw text: request.text()/arrayBuffer() or a stream reader, in the handler or in a helper it calls.
+  const READS_RAW = /\.\s*(?:text|arrayBuffer)\s*\(\s*\)|\.\s*getReader\s*\(/;
+  if (!READS_RAW.test(body) && !callsAny(body, functionsReaching(set, (code) => READS_RAW.test(code)))) {
+    fail("C8", route.rel, handlerLine, "the body is not read as raw text (request.text() or a bounded stream reader)");
   }
   // Parsers and verifiers: by what their body reaches (any depth), and verifiers also by name.
   const parsers = functionsReaching(set, (code) => /JSON\s*\.\s*parse\s*\(/.test(code));
@@ -513,14 +629,22 @@ for (const route of callbackRoutes) {
     const f = set.find((x) => /timingSafeEqual\s*\(/.test(x.noComments));
     fail("C9", f.rel, lineOf(f, f.noComments.search(/timingSafeEqual\s*\(/)), "no HMAC of the body: verify sha256=HMAC(N8N_CALLBACK_SECRET, \"<timestamp>.<raw body>\")");
   }
-  // A line compares a signature with ===/!== (whole identifier parts only: "assignedTo" is not "sig").
-  const comparesSignature = (line, words) => {
-    if (!/[!=]==?/.test(line) || /\.length|byteLength|typeof/.test(line)) return false;
-    if (/[!=]==?\s*(?:null|undefined|""|''|0|false|true)\b|\b(?:null|undefined)\s*[!=]==?/.test(line)) return false;
-    return (line.match(/[A-Za-z_$][\w$]*/g) ?? []).some((id) =>
+  // A comparison with ===/!== that names a signature (whole identifier parts only: "assignedTo" is
+  // not "sig"). Each comparison on the line is judged alone, so `sig === expected || sig == null`
+  // still counts; only comparisons with a literal, a length or a typeof are fine.
+  const TRIVIAL_SIDE = /^(?:null|undefined|true|false|\d+|(["'`])\s*\1)$|\.length$|byteLength|^typeof\b/;
+  const namesSignature = (text, words) =>
+    (text.match(/[A-Za-z_$][\w$]*/g) ?? []).some((id) =>
       id.split(/_|(?<=[a-z0-9])(?=[A-Z])/).some((part) => words.has(part.toLowerCase())),
     );
-  };
+  const comparesSignature = (line, words) =>
+    line.split(/&&|\|\||[?:;,(){}[\]]/).some((segment) => {
+      const m = /^(.*?)([!=]==?)(.*)$/.exec(segment);
+      if (!m) return false;
+      const sides = [m[1].trim(), m[3].trim()];
+      if (sides.some((side) => side === "" || TRIVIAL_SIDE.test(side))) return false;
+      return namesSignature(segment, words);
+    });
   const SIGNATURE_WORDS = new Set(["sig", "signature", "hmac", "digest"]);
   const SIGNATURE_OR_EXPECTED = new Set([...SIGNATURE_WORDS, "expected"]);
   for (const f of set) {
@@ -539,8 +663,24 @@ for (const route of callbackRoutes) {
   if (!/x-n8n-timestamp/i.test(setText) || !usesWindow(set, body)) {
     fail("C10", route.rel, handlerLine, "a stale x-n8n-timestamp is not rejected: the POST handler must check the 300 s window");
   }
-  if (!/idempotency-key/i.test(setText) || !/\bjobId\b/.test(setText) || !/claim|reserve|\.add\s*\(|insert|setnx|unique/i.test(setText)) {
-    fail("C11", route.rel, handlerLine, "idempotency-key is not claimed or not checked against data.jobId and the event");
+  // The handler claims the key (itself or through a helper), and the key is compared with a
+  // `${…jobId…}:${…}` built from the signed body, directly or through a variable.
+  const CLAIM = /(?<![\w$.])[\w$]*(?:claim|reserve|setnx|insert)[\w$]*\s*\(|\.\s*add\s*\(/i;
+  const claims = CLAIM.test(body) || callsAny(body, functionsReaching(set, (code) => CLAIM.test(code)));
+  const keyTiedToJob = set.some((f) =>
+    [...matches(f.code, /`[^`]*\$\{[^}`]*\bjobId\b[^}`]*\}[^`]*`/)].some((m) => {
+      const before = f.code.slice(Math.max(0, m.index - 80), m.index);
+      const after = f.code.slice(m.index + m[0].length, m.index + m[0].length + 20);
+      if (/[!=]==?\s*$/.test(before) || /^\s*[!=]==?/.test(after)) return true;
+      const decl = /(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*$/.exec(before);
+      const name = decl && escapeRe(decl[1]);
+      return Boolean(name) && new RegExp(`[!=]==?\\s*${name}\\b|\\b${name}\\s*[!=]==?`).test(f.code);
+    }),
+  );
+  if (!/idempotency-key/i.test(setText) || !claims) {
+    fail("C11", route.rel, handlerLine, "idempotency-key is not claimed in the POST handler");
+  } else if (!keyTiedToJob) {
+    fail("C11", route.rel, handlerLine, "idempotency-key is not compared with `${data.jobId}:${event}` from the signed body");
   }
 }
 
@@ -553,7 +693,7 @@ for (const f of files) {
 
 // C13 - .env.example (key names only, values are never printed)
 if (envText === null) {
-  fail("C13", ENV_REL, null, "no .env.example");
+  fail("C13", ENV_REL, 1, "no .env.example", true);
 } else {
   const keys = new Map();
   envLines.forEach((line, i) => {
@@ -562,7 +702,7 @@ if (envText === null) {
   });
   const required = ["N8N_WEBHOOK_BASE_URL", "N8N_WEBHOOK_TOKEN", "N8N_CALLBACK_SECRET", "APP_BASE_URL"];
   const missing = required.filter((k) => !keys.has(k));
-  if (missing.length) fail("C13", ENV_REL, null, `missing key(s): ${missing.join(", ")}`);
+  if (missing.length) fail("C13", ENV_REL, 1, `missing key(s): ${missing.join(", ")}`, true);
   for (const [key, { value, line }] of keys) {
     const isSecret = key === "N8N_WEBHOOK_TOKEN" || key === "N8N_CALLBACK_SECRET" || /(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)$/.test(key);
     if (isSecret && !value.startsWith("change-me")) fail("C13", ENV_REL, line, `${key} must be a change-me-... placeholder`);
@@ -595,6 +735,32 @@ function git(argv) {
   });
 }
 
+// git quotes unusual paths as "..." with C escapes and octal bytes (core.quotepath=false only keeps
+// UTF-8 letters as they are); a quoted path would not match the file, and its findings would be lost.
+function unquoteGitPath(p) {
+  if (!p.startsWith('"') || !p.endsWith('"')) return p;
+  const ESC = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+  const inner = p.slice(1, -1);
+  const bytes = [];
+  for (let i = 0; i < inner.length; ) {
+    if (inner[i] === "\\") {
+      const next = inner[i + 1];
+      if (/[0-7]/.test(next)) {
+        bytes.push(parseInt(inner.slice(i + 1, i + 4), 8));
+        i += 4;
+      } else {
+        bytes.push(ESC[next] ?? next.charCodeAt(0));
+        i += 2;
+      }
+    } else {
+      const ch = String.fromCodePoint(inner.codePointAt(i));
+      bytes.push(...Buffer.from(ch));
+      i += ch.length;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 let changed = null;
 if (args["changed-since"] !== undefined) {
   const ref = args["changed-since"];
@@ -608,7 +774,7 @@ if (args["changed-since"] !== undefined) {
   for (const line of git(["diff", "-U0", "--no-color", "--no-ext-diff", ref, "--"]).split("\n")) {
     if (line.startsWith("+++ ")) {
       const target = line.slice(4).trim();
-      current = target === "/dev/null" ? null : target.replace(/^b\//, "");
+      current = target === "/dev/null" ? null : unquoteGitPath(target).replace(/^b\//, "");
       if (current && !changed.has(current)) changed.set(current, { all: false, lines: new Set() });
       continue;
     }
@@ -619,16 +785,16 @@ if (args["changed-since"] !== undefined) {
       for (let k = 0; k < count; k++) changed.get(current).lines.add(from + k);
     }
   }
-  for (const rel of git(["ls-files", "--others", "--exclude-standard"]).split("\n").filter(Boolean)) {
+  for (const rel of git(["ls-files", "-z", "--others", "--exclude-standard"]).split("\0").filter(Boolean)) {
     changed.set(rel, { all: true, lines: new Set() });
   }
 }
 
-function inScope({ rel, line }) {
+function inScope({ rel, line, fileLevel }) {
   if (!changed) return true;
   const entry = changed.get(rel);
   if (!entry) return false;
-  return entry.all || line === null || entry.lines.has(line);
+  return entry.all || fileLevel || entry.lines.has(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +817,7 @@ for (const [id, title] of CHECKS) {
   else if (!all.length && notApplicable.has(id)) status = "N/A";
   const note = status === "N/A" ? ` (${notApplicable.get(id)})` : ignored ? ` (${ignored} finding(s) in unchanged code ignored)` : "";
   console.log(`${id.padEnd(4)} ${status.padEnd(4)}  ${title}${note}`);
-  for (const f of kept) console.log(`      ${f.rel}${f.line ? `:${f.line}` : ""} - ${f.message}`);
+  for (const f of kept) console.log(`      ${f.rel}:${f.line} - ${f.message}`);
   if (status === "FAIL") failed++;
   else if (status === "PASS") passed++;
   else skipped++;

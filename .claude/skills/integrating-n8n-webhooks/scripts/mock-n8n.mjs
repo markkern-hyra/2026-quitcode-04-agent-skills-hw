@@ -52,6 +52,9 @@ Callback (async modes): POST <callback url>, body
             body above), x-correlation-id (copied from the trigger)
   Retried like "Retry On Fail" (3 tries, 1000 ms apart) on network errors and 5xx.
 
+A repeated idempotency-key (after auth) is dropped like n8n's Remove Duplicates: the same
+answer (the first job_id), no second workflow run and no second callback.
+
 The log shows method, path, status, duration, header NAMES, body size and sha256.
 Bodies and header values are never printed.
 `;
@@ -123,7 +126,8 @@ const token = process.env.N8N_WEBHOOK_TOKEN || "";
 const callbackSecret = process.env.N8N_CALLBACK_SECRET || "";
 const startedAt = Date.now();
 const testUrlsUntil = args.listen ? startedAt + TEST_WINDOW_MS : 0;
-const seenIdempotencyKeys = new Set();
+// idempotency-key -> job_id of its first execution (n8n: Remove Duplicates right after the Webhook)
+const seenIdempotencyKeys = new Map();
 
 function log(line) {
   console.log(`[mock-n8n] ${new Date().toISOString()} ${line}`);
@@ -136,6 +140,12 @@ function isHttpUrl(value) {
   } catch {
     return false;
   }
+}
+
+// origin + path only: a query string could carry a token, and the log must not
+function urlLabel(value) {
+  const url = new URL(value);
+  return `${url.origin}${url.pathname}`;
 }
 
 function sha256(buffer) {
@@ -209,8 +219,7 @@ async function sendCallback({ target, event, jobId, correlationId, requestKey })
     "idempotency-key": `${jobId}:${event}`,
   };
   if (correlationId) headers["x-correlation-id"] = correlationId;
-  const where = new URL(target);
-  const label = `${where.origin}${where.pathname}`;
+  const label = urlLabel(target);
 
   for (let attempt = 1; attempt <= CALLBACK_TRIES; attempt++) {
     const started = Date.now();
@@ -293,11 +302,11 @@ async function handleWebhook(req, res, kind, path, body, size, started) {
   }
 
   const requestKey = typeof req.headers["idempotency-key"] === "string" ? req.headers["idempotency-key"] : null;
+  const firstJobId = requestKey ? seenIdempotencyKeys.get(requestKey) : undefined;
   if (!requestKey) {
     extra.push("idempotency=absent");
   } else {
-    extra.push(`idempotency=${seenIdempotencyKeys.has(requestKey) ? "repeat" : "new"}`);
-    seenIdempotencyKeys.add(requestKey);
+    extra.push(`idempotency=${firstJobId ? "repeat" : "new"}`);
   }
 
   if (size > MAX_BODY_BYTES) {
@@ -307,7 +316,17 @@ async function handleWebhook(req, res, kind, path, body, size, started) {
 
   const envelope = parseEnvelope(body, req.headers["content-type"]);
   const correlationId = typeof req.headers["x-correlation-id"] === "string" ? req.headers["x-correlation-id"] : null;
+
+  // A repeat of a key already seen is dropped like Remove Duplicates does: the same answer, no second
+  // workflow run and no second callback.
+  if (firstJobId && (mode === "immediately" || mode === "respond-202")) {
+    if (mode === "immediately") send(res, 200, { message: "Workflow was started" });
+    else send(res, 202, { job_id: firstJobId });
+    extra.push("duplicate dropped, no new run");
+    return finish(mode === "immediately" ? 200 : 202);
+  }
   const jobId = randomUUID();
+  if (requestKey) seenIdempotencyKeys.set(requestKey, jobId);
 
   if (mode === "immediately" || mode === "respond-202") {
     if (mode === "immediately") send(res, 200, { message: "Workflow was started" });
@@ -386,7 +405,7 @@ server.listen(port, args.host, () => {
   log(token ? "header auth: x-n8n-token required (N8N_WEBHOOK_TOKEN is set)" : "header auth: none (N8N_WEBHOOK_TOKEN is not set)");
   log(
     callbackSecret
-      ? `callbacks: signed, sent to ${callbackUrlFlag ?? "the request's callbackUrl"} after ${delayMs} ms (async modes)`
+      ? `callbacks: signed, sent to ${callbackUrlFlag ? urlLabel(callbackUrlFlag) : "the request's callbackUrl"} after ${delayMs} ms (async modes)`
       : "callbacks: off (N8N_CALLBACK_SECRET is not set)",
   );
 });
