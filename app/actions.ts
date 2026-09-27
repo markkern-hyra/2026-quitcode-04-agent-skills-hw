@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { getCurrentUser, getLead, getWorkspace } from "@/lib/data";
 import { parseLeadForm, type LeadFormField } from "@/lib/lead-form";
+import { parseLeadNoteForm, type LeadNoteFormField } from "@/lib/lead-note-form";
 import { triggerWorkflow } from "@/lib/n8n/client";
 import { LEAD_STATUSES, type LeadStatus } from "@/lib/types";
 
@@ -74,10 +75,14 @@ export async function submitLead(
 
 // Server Actions are public POST endpoints, not just buttons in our UI: every
 // action checks the session and that the lead belongs to the caller's workspace.
-async function requireOwnLead(id: string) {
+async function isOwnLead(id: string) {
   const user = await getCurrentUser();
   const [workspace, lead] = await Promise.all([getWorkspace(user.workspaceSlug), getLead(id)]);
-  if (!lead || lead.workspaceId !== workspace.id) {
+  return lead !== null && lead.workspaceId === workspace.id;
+}
+
+async function requireOwnLead(id: string) {
+  if (!(await isOwnLead(id))) {
     throw new Error("Lead not found");
   }
 }
@@ -90,6 +95,44 @@ export async function updateLeadStatus(id: string, status: LeadStatus) {
   await db.updateLeadStatus(id, status);
   revalidatePath("/dashboard");
   revalidatePath(`/dashboard/leads/${id}`);
+}
+
+export type AddLeadNoteState =
+  | { status: "idle" }
+  | {
+      status: "invalid";
+      errors: Partial<Record<LeadNoteFormField, string>>;
+      values: Partial<Record<LeadNoteFormField, string>>;
+    }
+  | { status: "error" }
+  | { status: "ok" };
+
+export async function addLeadNote(
+  _prevState: AddLeadNoteState,
+  formData: FormData,
+): Promise<AddLeadNoteState> {
+  const leadId = formData.get("leadId");
+  if (typeof leadId !== "string" || !(await isOwnLead(leadId))) {
+    return { status: "error" };
+  }
+
+  const parsed = parseLeadNoteForm(formData);
+  if (!parsed.ok) {
+    return { status: "invalid", errors: parsed.errors, values: parsed.values };
+  }
+
+  try {
+    if (!(await db.appendLeadNote(leadId, parsed.data.text))) {
+      return { status: "error" };
+    }
+  } catch (error) {
+    console.error("lead.note_add_failed", leadId, error instanceof Error ? error.name : "UnknownError");
+    return { status: "error" };
+  }
+
+  after(() => logAudit("lead.note_added", leadId));
+  revalidatePath(`/dashboard/leads/${leadId}`);
+  return { status: "ok" };
 }
 
 export async function deleteLead(id: string) {
