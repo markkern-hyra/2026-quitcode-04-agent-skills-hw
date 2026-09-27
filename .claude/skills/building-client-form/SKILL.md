@@ -41,6 +41,10 @@ metadata:
    `required`/`maxLength` на полях лишаємо як підказку, але `<form noValidate>` — джерело правди сервер.
 3. **Клієнт — `useActionState`**: `const [state, formAction, pending] = useActionState(action, { status: "idle" })`,
    `<form action={formAction}>`. Такий компонент рендериться на сервері, тож форма працює й без JavaScript.
+   **Id запису, до якого належить форма, — прихованим полем** `<input type="hidden" name="<сутність>Id" value={id} />`;
+   дія бере його з `formData` і перевіряє належність (крок 1). Не `.bind(null, id)` у Client Component:
+   у Next.js 16.3.5 відправка такої форми без JavaScript зависає — сторінка «крутиться» й не відповідає
+   (перевірено на формі нотатки ліда).
 4. **Помилки, які видно й чути:**
    - кожне поле має `<label htmlFor>`;
    - поле з помилкою — `aria-invalid="true"` і `aria-describedby="<поле>-error"`, текст помилки —
@@ -74,9 +78,11 @@ export type NoteFormState =
 
 export async function addNote(_prev: NoteFormState, formData: FormData): Promise<NoteFormState> {
   const user = await requireUser();                 // 1. сесія й права — всередині дії
+  const recordId = formData.get("recordId");        // id — з прихованого поля, не з .bind
+  if (typeof recordId !== "string" || !(await canEdit(user, recordId))) return { status: "error" };
   const parsed = parseNoteForm(formData);           // 2. серверна валідація
   if (!parsed.ok) return { status: "invalid", errors: parsed.errors, values: parsed.values };
-  const note = await saveNote(user, parsed.data);   // запис — до відповіді
+  const note = await saveNote(recordId, parsed.data); // запис — до відповіді
   after(() => notifyTeam(note.id));                 // 8. повільне — після відповіді
   return { status: "ok", id: note.id };             // 6. лише стан
 }
@@ -90,6 +96,7 @@ const errors = state.status === "invalid" ? state.errors : {};
 const values = state.status === "invalid" ? state.values : {};
 
 <form action={formAction} noValidate>
+  <input type="hidden" name="recordId" value={recordId} />
   {state.status === "invalid" && <div role="alert">Перевірте поле «Нотатка».</div>}
   <label htmlFor="text">Нотатка</label>
   <textarea id="text" name="text" maxLength={500} defaultValue={values.text}
@@ -112,6 +119,7 @@ const values = state.status === "invalid" ? state.values : {};
 - [ ] 7. Дія повертає лише { status, … } — не рядок з бази.
 - [ ] 8. У журналах немає formData, імен, email, телефонів, IP.
 - [ ] 9. Листи, інтеграції, аудит — в after(), а не перед return.
+- [ ] 10. Id запису — прихованим полем і перевіряється в дії; .bind дії в Client Component немає.
 ```
 
 ## Правила зупинки — зупинись і спитай людину, якщо:
@@ -130,7 +138,8 @@ const values = state.status === "invalid" ? state.values : {};
 
 - [ ] `npm run lint` і `npm run build` без помилок.
 - [ ] Порожня відправка: біля полів — тексти помилок, над формою — підсумок, введене не зникло.
-- [ ] DevTools → Disable JavaScript: форма відправляється й показує ті самі помилки чи успіх.
+- [ ] DevTools → Disable JavaScript: після «Надіслати» сторінка перезавантажується (а не «крутиться») і
+  показує ті самі помилки чи успіх.
 - [ ] Дія без сесії (вийти з акаунта й повторити запит) відхиляється; чужий запис змінити не можна.
 - [ ] Журнал сервера після відправки: немає email, телефонів, імен і тіла запиту.
 - [ ] Відповідь форми не чекає на лист чи інтеграцію: вони в журналі після відповіді.
