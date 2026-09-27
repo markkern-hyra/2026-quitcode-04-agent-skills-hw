@@ -9,9 +9,12 @@
    подій на кшталт `lead-created` — `Immediately`). Якщо в хостингу застосунку фіксовані IP — Options →
    IP(s) Allowlist (за reverse proxy — `N8N_PROXY_HOPS`). У наступних вузлах тіло — `$json.body`,
    заголовки — `$json.headers` (імена в нижньому регістрі).
-2. **Remove Duplicates:** «Remove Items Processed in Previous Executions», значення —
-   `{{ $json.headers['idempotency-key'] }}`.
-3. **Respond to Webhook:** Respond With JSON, Response Code `202`, тіло `{"job_id": "{{ $execution.id }}"}`.
+2. **Respond to Webhook** — одразу за Webhook, **до** Remove Duplicates: Respond With JSON, Response Code `202`,
+   тіло `{"job_id": "{{ $execution.id }}"}`. Так 202 отримує й повтор: якби Remove Duplicates стояв раніше,
+   відкинутий повтор завершив би виконання, не дійшовши до цього вузла, n8n відповів би стандартним 200, а
+   LeadDesk (для воркфлоу з колбеком успіх — лише 202) позначив би запит як `failed`.
+3. **Remove Duplicates:** «Remove Items Processed in Previous Executions», значення —
+   `{{ $json.headers['idempotency-key'] }}`: повтор далі не йде — другого запуску й колбека немає.
 4. … робота воркфлоу (генерація PDF тощо) …
 5. **Edit Fields:** поле `ts` = `{{ Math.floor($now.toSeconds()) }}`; поле `body` =
    `{{ JSON.stringify({ version: 1, event: 'quote-request.completed', data: { jobId: $execution.id, status: 'completed', correlationId: $('Webhook').item.json.headers['x-correlation-id'], requestIdempotencyKey: $('Webhook').item.json.headers['idempotency-key'], result: { documentUrl: … }, completedAt: $now.toISO() } }) }}`.

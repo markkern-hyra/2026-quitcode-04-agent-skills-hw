@@ -52,8 +52,8 @@ Callback (async modes): POST <callback url>, body
             body above), x-correlation-id (copied from the trigger)
   Retried like "Retry On Fail" (3 tries, 1000 ms apart) on network errors and 5xx.
 
-A repeated idempotency-key (after auth) is dropped like n8n's Remove Duplicates: the same
-answer (the first job_id), no second workflow run and no second callback.
+A repeated idempotency-key (after auth) is dropped like n8n's Remove Duplicates placed after
+Respond to Webhook: it still gets the 202 answer, but no second workflow run and no second callback.
 
 The log shows method, path, status, duration, header NAMES, body size and sha256.
 Bodies and header values are never printed.

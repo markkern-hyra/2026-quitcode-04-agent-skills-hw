@@ -20,7 +20,7 @@ metadata:
 
 Форма запускає воркфлоу клієнта в n8n, а n8n повідомляє колбеком, коли результат готовий. Контракт нижче —
 рішення команди: відхилятися від нього можна лише свідомо й письмово (у PR з поясненням), а не тому, що
-«так згенерувалось». Деталі й «чому» — у `references/`, перевірка — `scripts/check-contract.mjs`.
+«так згенерувалось». Деталі й «чому» — у `references/`, перевірка — [scripts/check-contract.mjs](scripts/check-contract.mjs).
 
 ## Коли застосовувати
 
@@ -59,7 +59,7 @@ metadata:
 ## Як робимо
 
 1. **`lib/n8n/client.ts`** — один модуль з `import "server-only"`: функція запуску воркфлоу з конвертом,
-   заголовками, таймаутом і повторами. Готовий шаблон — `references/code-templates.md`.
+   заголовками, таймаутом і повторами. Готовий шаблон — [references/code-templates.md](references/code-templates.md).
 2. **Server Action** — публічний POST-ендпоінт: перевірка прав і валідація всередині (правило
    [`server-auth-actions`](../vercel-react-best-practices/rules/server-auth-actions.md) зі скіла Vercel). Дія
    зберігає запис зі статусом `queued` і своїм `idempotency-key`, повертає лише `{ status, id }`, а виклик n8n
@@ -69,14 +69,14 @@ metadata:
    Next.js виконує дії одного клієнта по черзі: очікування n8n заблокувало б і наступні.
 3. **Колбек-роут** `app/api/n8n/[event]/route.ts` — за порядком вище; запис знаходимо за
    `data.requestIdempotencyKey` (це ключ нашого запиту), `idempotency-key` колбека зберігаємо в сховищі з
-   унікальністю. Шаблон — `references/code-templates.md`, пояснення кожного кроку — `references/callback.md`.
+   унікальністю. Шаблон — [references/code-templates.md](references/code-templates.md), пояснення кожного кроку — [references/callback.md](references/callback.md).
 4. **Сторінка статусу** читає лише збережений стан (`queued` → `ready`/`failed`); n8n звідти не викликаємо.
 5. **`.env.example`** — 4 ключі контракту; `.env.local` — ті самі ключі зі значеннями (секрети генеруємо:
    `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`).
 6. **Журнали:** подія, напрям, `x-correlation-id`, код, тривалість, номер спроби. Ніколи — тіла, ім'я,
    email, телефон, IP, токен, підпис, секрет. Помилки у відповідях — без подробиць. Див.
-   `references/logging-and-limits.md`.
-7. **Налаштування n8n клієнта** передаємо словами, без JSON воркфлоу — `references/n8n-setup.md`.
+   [references/logging-and-limits.md](references/logging-and-limits.md).
+7. **Налаштування n8n клієнта** передаємо словами, без JSON воркфлоу — [references/n8n-setup.md](references/n8n-setup.md).
 8. Реєстр інтеграцій проєкту — рядок у `docs/n8n-integrations.md` на кожну подію.
 
 ## Чекліст
@@ -125,15 +125,15 @@ metadata:
 
 ## Файли скіла
 
-- `references/contract.md` — змінні, запит, конверт, таймаут і повтори, хто викликає; читати перед кодом
+- [references/contract.md](references/contract.md) — змінні, запит, конверт, таймаут і повтори, хто викликає; читати перед кодом
   клієнта й дії.
-- `references/callback.md` — колбек крок за кроком: коди, чому саме такий порядок, ідемпотентність.
-- `references/response-modes.md` — режими відповіді вебхука, ліміт 100 с / 524, тестовий і production URL.
-- `references/code-templates.md` — шаблони `lib/n8n/client.ts`, підпису, читання тіла з лімітом,
+- [references/callback.md](references/callback.md) — колбек крок за кроком: коди, чому саме такий порядок, ідемпотентність.
+- [references/response-modes.md](references/response-modes.md) — режими відповіді вебхука, ліміт 100 с / 524, тестовий і production URL.
+- [references/code-templates.md](references/code-templates.md) — шаблони `lib/n8n/client.ts`, підпису, читання тіла з лімітом,
   ідемпотентності, колбек-роуту, Server Action, `.env.example`.
-- `references/logging-and-limits.md` — що писати в журнал і чого ніколи; ліміти.
-- `references/n8n-setup.md` — налаштування вузлів n8n словами (для адміністратора n8n клієнта).
-- `references/pitfalls.md` — відомі пастки документації й чужих скілів, межі скіла.
-- `scripts/check-contract.mjs` — статична перевірка контракту (`--help`, `--root`, `--changed-since`).
-- `scripts/mock-n8n.mjs` — офлайн-мок n8n (`--help`): режими відповіді, Header Auth, підписаний колбек.
-- `scripts/send-signed-callback.mjs` — матриця колбеків проти роуту (`--help`).
+- [references/logging-and-limits.md](references/logging-and-limits.md) — що писати в журнал і чого ніколи; ліміти.
+- [references/n8n-setup.md](references/n8n-setup.md) — налаштування вузлів n8n словами (для адміністратора n8n клієнта).
+- [references/pitfalls.md](references/pitfalls.md) — відомі пастки документації й чужих скілів, межі скіла.
+- [scripts/check-contract.mjs](scripts/check-contract.mjs) — статична перевірка контракту (`--help`, `--root`, `--changed-since`).
+- [scripts/mock-n8n.mjs](scripts/mock-n8n.mjs) — офлайн-мок n8n (`--help`): режими відповіді, Header Auth, підписаний колбек.
+- [scripts/send-signed-callback.mjs](scripts/send-signed-callback.mjs) — матриця колбеків проти роуту (`--help`).
